@@ -1,3 +1,8 @@
 # Backend dependencies
 fastapi
 uvicorn[standard]
+PyMuPDF
+pytesseract
+watchfiles
+python-dotenv
+Pillow
