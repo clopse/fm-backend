@@ -1,0 +1,5 @@
+[
+  { "month": "Jan-25", "day_kwh": 40000, "night_kwh": 30000, "total_kwh": 70000, "total_eur": 14500, "per_room_kwh": 350 },
+  { "month": "Feb-25", "day_kwh": 42000, "night_kwh": 28000, "total_kwh": 70000, "total_eur": 14800, "per_room_kwh": 360 },
+  { "month": "Mar-25", "day_kwh": 43000, "night_kwh": 27000, "total_kwh": 70000, "total_eur": 14950, "per_room_kwh": 370 }
+]

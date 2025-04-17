@@ -1,0 +1,74 @@
+[
+  {
+    "period": "1 Jan - 30 Jan 2023",
+    "total_kwh": 24197,
+    "total_eur": 1875,
+    "per_room_kwh": 137
+  },
+  {
+    "period": "1 Feb - 30 Feb 2023",
+    "total_kwh": 29868,
+    "total_eur": 1422,
+    "per_room_kwh": 128
+  },
+  {
+    "period": "1 Mar - 30 Mar 2023",
+    "total_kwh": 22197,
+    "total_eur": 1880,
+    "per_room_kwh": 137
+  },
+  {
+    "period": "1 Apr - 30 Apr 2023",
+    "total_kwh": 20445,
+    "total_eur": 1958,
+    "per_room_kwh": 125
+  },
+  {
+    "period": "1 May - 30 May 2023",
+    "total_kwh": 23122,
+    "total_eur": 1483,
+    "per_room_kwh": 142
+  },
+  {
+    "period": "1 Jun - 30 Jun 2023",
+    "total_kwh": 22312,
+    "total_eur": 1800,
+    "per_room_kwh": 132
+  },
+  {
+    "period": "1 Jul - 30 Jul 2023",
+    "total_kwh": 22610,
+    "total_eur": 1995,
+    "per_room_kwh": 140
+  },
+  {
+    "period": "1 Aug - 30 Aug 2023",
+    "total_kwh": 27567,
+    "total_eur": 1741,
+    "per_room_kwh": 147
+  },
+  {
+    "period": "1 Sep - 30 Sep 2023",
+    "total_kwh": 21203,
+    "total_eur": 1873,
+    "per_room_kwh": 133
+  },
+  {
+    "period": "1 Oct - 30 Oct 2023",
+    "total_kwh": 21461,
+    "total_eur": 1151,
+    "per_room_kwh": 141
+  },
+  {
+    "period": "1 Nov - 30 Nov 2023",
+    "total_kwh": 21735,
+    "total_eur": 1458,
+    "per_room_kwh": 125
+  },
+  {
+    "period": "1 Dec - 30 Dec 2023",
+    "total_kwh": 28827,
+    "total_eur": 1721,
+    "per_room_kwh": 127
+  }
+]

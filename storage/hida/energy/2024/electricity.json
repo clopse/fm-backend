@@ -1,0 +1,98 @@
+[
+  {
+    "month": "Jan-24",
+    "day_kwh": 44197,
+    "night_kwh": 30775,
+    "total_kwh": 69197,
+    "total_eur": 15775,
+    "per_room_kwh": 397
+  },
+  {
+    "month": "Feb-24",
+    "day_kwh": 49868,
+    "night_kwh": 33322,
+    "total_kwh": 74868,
+    "total_eur": 16322,
+    "per_room_kwh": 368
+  },
+  {
+    "month": "Mar-24",
+    "day_kwh": 42197,
+    "night_kwh": 33780,
+    "total_kwh": 67197,
+    "total_eur": 14780,
+    "per_room_kwh": 397
+  },
+  {
+    "month": "Apr-24",
+    "day_kwh": 40445,
+    "night_kwh": 25858,
+    "total_kwh": 65445,
+    "total_eur": 14858,
+    "per_room_kwh": 395
+  },
+  {
+    "month": "May-24",
+    "day_kwh": 43122,
+    "night_kwh": 27383,
+    "total_kwh": 68122,
+    "total_eur": 16383,
+    "per_room_kwh": 372
+  },
+  {
+    "month": "Jun-24",
+    "day_kwh": 42312,
+    "night_kwh": 31700,
+    "total_kwh": 67312,
+    "total_eur": 16700,
+    "per_room_kwh": 362
+  },
+  {
+    "month": "Jul-24",
+    "day_kwh": 42610,
+    "night_kwh": 30895,
+    "total_kwh": 67610,
+    "total_eur": 15895,
+    "per_room_kwh": 360
+  },
+  {
+    "month": "Aug-24",
+    "day_kwh": 47567,
+    "night_kwh": 30641,
+    "total_kwh": 72567,
+    "total_eur": 17641,
+    "per_room_kwh": 367
+  },
+  {
+    "month": "Sep-24",
+    "day_kwh": 41203,
+    "night_kwh": 31773,
+    "total_kwh": 66203,
+    "total_eur": 16773,
+    "per_room_kwh": 353
+  },
+  {
+    "month": "Oct-24",
+    "day_kwh": 41461,
+    "night_kwh": 27051,
+    "total_kwh": 66461,
+    "total_eur": 16051,
+    "per_room_kwh": 361
+  },
+  {
+    "month": "Nov-24",
+    "day_kwh": 41735,
+    "night_kwh": 30358,
+    "total_kwh": 66735,
+    "total_eur": 15358,
+    "per_room_kwh": 385
+  },
+  {
+    "month": "Dec-24",
+    "day_kwh": 48827,
+    "night_kwh": 33621,
+    "total_kwh": 73827,
+    "total_eur": 14621,
+    "per_room_kwh": 377
+  }
+]
