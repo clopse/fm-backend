@@ -7,3 +7,4 @@ watchfiles
 python-dotenv
 Pillow
 openpyxl
+python-multipart
