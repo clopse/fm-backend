@@ -6,3 +6,4 @@ pytesseract
 watchfiles
 python-dotenv
 Pillow
+openpyxl
