@@ -1,0 +1,29 @@
+# --- Python ---
+*.pyc
+*.pyo
+__pycache__/
+
+# --- Environments & Secrets ---
+.env
+.env.*
+
+# --- Virtualenv ---
+venv/
+.venv/
+
+# --- IDEs / Editors ---
+.vscode/
+.idea/
+*.swp
+
+# --- OS junk ---
+.DS_Store
+Thumbs.db
+
+# --- Logs / Temp files ---
+*.log
+*.tmp
+
+# --- Local storage (optional) ---
+storage/
+uploads/

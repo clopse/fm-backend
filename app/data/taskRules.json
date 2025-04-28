@@ -1,0 +1,249 @@
+{
+    "fire_extinguisher": {
+      "frequency": "annual",
+      "uploads_required": 1,
+      "grace_days": 30,
+      "points": 10
+    },
+    "sprinkler_check": {
+      "frequency": "annual",
+      "uploads_required": 1,
+      "grace_days": 30,
+      "points": 10
+    },
+    "fire_alarm": {
+      "frequency": "6-per-year",
+      "uploads_required": 6,
+      "grace_days": 30,
+      "points": 15
+    },
+    "fire_walks": {
+      "frequency": "weekly_percentage",
+      "uploads_required": 52,
+      "grace_days": 7,
+      "points": 20
+    },
+    "panel_check": {
+      "frequency": "quarterly",
+      "uploads_required": 4,
+      "grace_days": 30,
+      "points": 15
+    },
+    "aov_check": {
+      "frequency": "annual",
+      "uploads_required": 1,
+      "grace_days": 30,
+      "points": 10
+    },
+    "dry_riser": {
+      "frequency": "annual",
+      "uploads_required": 1,
+      "grace_days": 30,
+      "points": 10
+    },
+    "disabled_refuge": {
+      "frequency": "annual",
+      "uploads_required": 1,
+      "grace_days": 30,
+      "points": 10
+    },
+    "fire_door_inspection": {
+      "frequency": "annual",
+      "uploads_required": 1,
+      "grace_days": 30,
+      "points": 15
+    },
+    "fire_damper": {
+      "frequency": "annual",
+      "uploads_required": 1,
+      "grace_days": 30,
+      "points": 15
+    },
+    "fire_box": {
+      "frequency": "monthly",
+      "uploads_required": 12,
+      "grace_days": 30,
+      "points": 10
+    },
+    "fire_training_check": {
+      "frequency": "annual",
+      "uploads_required": 1,
+      "grace_days": 30,
+      "points": 10
+    },
+    "planned_fire_evacs": {
+      "frequency": "biannual",
+      "uploads_required": 2,
+      "grace_days": 30,
+      "points": 15
+    },
+    "emergency_lighting": {
+      "frequency": "monthly",
+      "uploads_required": 12,
+      "grace_days": 30,
+      "points": 10
+    },
+    "electrical_certificate": {
+      "frequency": "5-year",
+      "uploads_required": 1,
+      "grace_days": 180,
+      "points": 20
+    },
+    "pat_testing": {
+      "frequency": "annual",
+      "uploads_required": 1,
+      "grace_days": 30,
+      "points": 10
+    },
+    "fire_curtain": {
+      "frequency": "annual",
+      "uploads_required": 1,
+      "grace_days": 30,
+      "points": 10
+    },
+    "lightning_conductor": {
+      "frequency": "annual",
+      "uploads_required": 1,
+      "grace_days": 30,
+      "points": 10
+    },
+    "fall_arrest": {
+      "frequency": "annual",
+      "uploads_required": 1,
+      "grace_days": 30,
+      "points": 10
+    },
+    "fire_panel_service": {
+      "frequency": "quarterly",
+      "uploads_required": 4,
+      "grace_days": 30,
+      "points": 15
+    },
+    "downtime_report": {
+      "frequency": "daily",
+      "uploads_required": 365,
+      "grace_days": 1,
+      "points": 10
+    },
+    "fixed_wiring": {
+      "frequency": "5-year",
+      "uploads_required": 1,
+      "grace_days": 180,
+      "points": 20
+    },
+    "legionella_risk": {
+      "frequency": "2-year",
+      "uploads_required": 1,
+      "grace_days": 90,
+      "points": 20
+    },
+    "quarterly_disinfection": {
+      "frequency": "quarterly",
+      "uploads_required": 4,
+      "grace_days": 30,
+      "points": 10
+    },
+    "shower_descale": {
+      "frequency": "quarterly",
+      "uploads_required": 4,
+      "grace_days": 30,
+      "points": 10
+    },
+    "scheme_of_control": {
+      "frequency": "monthly",
+      "uploads_required": 12,
+      "grace_days": 30,
+      "points": 15
+    },
+    "fire_training": {
+      "frequency": "annual",
+      "uploads_required": 1,
+      "grace_days": 30,
+      "points": 10
+    },
+    "first_aid": {
+      "frequency": "annual",
+      "uploads_required": 1,
+      "grace_days": 30,
+      "points": 10
+    },
+    "fire_warden": {
+      "frequency": "annual",
+      "uploads_required": 1,
+      "grace_days": 30,
+      "points": 10
+    },
+    "safepass": {
+      "frequency": "annual",
+      "uploads_required": 1,
+      "grace_days": 30,
+      "points": 10
+    },
+    "click_hse": {
+      "frequency": "annual",
+      "uploads_required": 1,
+      "grace_days": 30,
+      "points": 10
+    },
+    "crisis_manual": {
+      "frequency": "annual",
+      "uploads_required": 1,
+      "grace_days": 30,
+      "points": 10
+    },
+    "hse_policy": {
+      "frequency": "annual",
+      "uploads_required": 1,
+      "grace_days": 30,
+      "points": 10
+    },
+    "risk_assessments": {
+      "frequency": "annual",
+      "uploads_required": 1,
+      "grace_days": 30,
+      "points": 10
+    },
+    "contractor_insurance": {
+      "frequency": "annual",
+      "uploads_required": 1,
+      "grace_days": 30,
+      "points": 10
+    },
+    "accident_book": {
+      "frequency": "monthly",
+      "uploads_required": 12,
+      "grace_days": 30,
+      "points": 10
+    },
+    "ladder_register": {
+      "frequency": "monthly",
+      "uploads_required": 12,
+      "grace_days": 30,
+      "points": 10
+    },
+    "kitchen_extract": {
+      "frequency": "6-month",
+      "uploads_required": 2,
+      "grace_days": 30,
+      "points": 15
+    },
+    "ansul_service": {
+      "frequency": "6-month",
+      "uploads_required": 2,
+      "grace_days": 30,
+      "points": 15
+    },
+    "gas_appliances": {
+      "frequency": "annual",
+      "uploads_required": 1,
+      "grace_days": 30,
+      "points": 10
+    },
+    "gas_detection": {
+      "frequency": "annual",
+      "uploads_required": 1,
+      "grace_days": 30,
+      "points": 10
+    }
+  }
+  
