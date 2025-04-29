@@ -25,12 +25,23 @@ def generate_public_url(key: str):
 
 def generate_signed_url(key: str, expires_in: int = 3600):
     try:
+        extension = key.lower().split('.')[-1]
+
+        content_type = {
+            'pdf': 'application/pdf',
+            'png': 'image/png',
+            'jpg': 'image/jpeg',
+            'jpeg': 'image/jpeg',
+            'gif': 'image/gif'
+        }.get(extension, 'application/octet-stream')
+
         url = s3_client.generate_presigned_url(
             'get_object',
             Params={
                 'Bucket': AWS_BUCKET_NAME,
                 'Key': key,
-                'ResponseContentDisposition': 'inline'  # ✅ Force inline display instead of attachment
+                'ResponseContentDisposition': 'inline',  # ✅ forces viewing inside iframe
+                'ResponseContentType': content_type        # ✅ correct MIME type
             },
             ExpiresIn=expires_in
         )
