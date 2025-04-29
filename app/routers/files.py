@@ -4,6 +4,7 @@ from app.services.storage_service import list_files, generate_signed_url
 
 router = APIRouter()
 
+
 def build_recursive_tree(file_keys: List[str]) -> List[Dict[str, Any]]:
     tree: Dict[str, Any] = {}
 
@@ -21,10 +22,10 @@ def build_recursive_tree(file_keys: List[str]) -> List[Dict[str, Any]]:
         current = tree
         for i, part in enumerate(parts):
             if i == len(parts) - 1:
-                # File node
+                # File node (✅ NO signed URL here – defer to GET route)
                 current.setdefault(part, {
                     "name": part,
-                    "url": generate_signed_url(key)
+                    "path": '/'.join(parts)
                 })
             else:
                 current = current.setdefault(part, {
@@ -42,6 +43,7 @@ def build_recursive_tree(file_keys: List[str]) -> List[Dict[str, Any]]:
 
     return convert_to_list(tree)
 
+
 @router.get("/files/tree/{hotel_id}")
 async def get_recursive_file_tree(hotel_id: str) -> List[Dict[str, Any]]:
     try:
@@ -54,3 +56,14 @@ async def get_recursive_file_tree(hotel_id: str) -> List[Dict[str, Any]]:
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error building file tree: {str(e)}")
+
+
+# ✅ NEW ROUTE: get signed URL for a specific service report file
+@router.get("/reports/{hotel_id}/{path:path}")
+async def get_service_report_file(hotel_id: str, path: str):
+    key = f"{hotel_id}/{path}"
+    try:
+        signed_url = generate_signed_url(key)
+        return {"url": signed_url}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate signed URL: {str(e)}")
