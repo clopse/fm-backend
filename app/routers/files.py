@@ -1,54 +1,47 @@
 from fastapi import APIRouter, HTTPException
-from typing import Dict, List
-from app.services.storage_service import list_files, generate_signed_url  # ✅ Use your signed URL function
+from typing import List, Dict, Any
+from app.services.storage_service import list_files, generate_signed_url
 
 router = APIRouter()
 
-@router.get("/files/{hotel_id}")
-async def list_service_files(hotel_id: str) -> Dict[str, Dict[str, List[Dict[str, str]]]]:
+def build_recursive_tree(file_keys: List[str]) -> List[Dict[str, Any]]:
+    tree: Dict[str, Any] = {}
+
+    for key in file_keys:
+        if key.endswith('/'):
+            continue
+
+        parts = key.strip('/').split('/')
+        current = tree
+
+        for i, part in enumerate(parts):
+            if i == len(parts) - 1:
+                # Last part is the file
+                current.setdefault(part, {"name": part, "url": generate_signed_url(key)})
+            else:
+                current = current.setdefault(part, {"name": part, "children": {}})["children"]
+
+    def convert_to_list(node: Dict[str, Any]) -> List[Dict[str, Any]]:
+        result = []
+        for value in node.values():
+            if "children" in value:
+                value["children"] = convert_to_list(value["children"])
+            result.append(value)
+        return result
+
+    return convert_to_list(tree)
+
+@router.get("/files/tree/{hotel_id}")
+async def get_recursive_file_tree(hotel_id: str) -> List[Dict[str, Any]]:
     try:
         prefix = f"{hotel_id}/"
-        objects = list_files(prefix)  # ✅ Load object keys using your working `list_files`
+        objects = list_files(prefix)
 
-        if not objects:
-            return {}
+        keys = [obj["Key"] for obj in objects if not obj["Key"].endswith("/")]
+        if not keys:
+            return []
 
-        reports = {
-            "Service Reports": {},
-            "Contracts": {}
-        }
-
-        for obj in objects:
-            key = obj["Key"]
-
-            if key.endswith("/"):
-                continue
-
-            parts = key.split("/", 3)
-            if len(parts) < 4:
-                continue
-
-            _, top_folder, company_folder, filename = parts
-
-            if top_folder == "reports":
-                section = "Service Reports"
-            elif top_folder == "contracts":
-                section = "Contracts"
-            else:
-                continue
-
-            if company_folder not in reports[section]:
-                reports[section][company_folder] = []
-
-            # ✅ Instead of building a public URL, generate a signed one:
-            signed_url = generate_signed_url(key, expires_in=3600)
-
-            reports[section][company_folder].append({
-                "filename": filename,
-                "url": signed_url,
-            })
-
-        return reports
+        return build_recursive_tree(keys)
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error accessing S3: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error building file tree: {str(e)}")
