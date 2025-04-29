@@ -11,10 +11,11 @@ def build_recursive_tree(file_keys: List[str]) -> List[Dict[str, Any]]:
         if key.endswith('/'):
             continue
 
-        parts = key.strip('/').split('/')
-        
-        # Only include 'contracts' and 'reports' folders
-        if len(parts) < 3 or parts[1] not in ['contracts', 'reports']:
+        # Skip the first part (hotelId)
+        parts = key.strip('/').split('/')[1:]
+
+        # Only include 'contracts' and 'reports'
+        if not parts or parts[0] not in ['contracts', 'reports']:
             continue
 
         current = tree
@@ -48,8 +49,6 @@ async def get_recursive_file_tree(hotel_id: str) -> List[Dict[str, Any]]:
         objects = list_files(prefix)
 
         keys = [obj["Key"] for obj in objects if not obj["Key"].endswith("/")]
-        if not keys:
-            return []
 
         return build_recursive_tree(keys)
 
