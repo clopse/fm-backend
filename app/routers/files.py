@@ -12,14 +12,24 @@ def build_recursive_tree(file_keys: List[str]) -> List[Dict[str, Any]]:
             continue
 
         parts = key.strip('/').split('/')
-        current = tree
+        
+        # Only include 'contracts' and 'reports' folders
+        if len(parts) < 3 or parts[1] not in ['contracts', 'reports']:
+            continue
 
+        current = tree
         for i, part in enumerate(parts):
             if i == len(parts) - 1:
-                # Last part is the file
-                current.setdefault(part, {"name": part, "url": generate_signed_url(key)})
+                # File node
+                current.setdefault(part, {
+                    "name": part,
+                    "url": generate_signed_url(key)
+                })
             else:
-                current = current.setdefault(part, {"name": part, "children": {}})["children"]
+                current = current.setdefault(part, {
+                    "name": part,
+                    "children": {}
+                })["children"]
 
     def convert_to_list(node: Dict[str, Any]) -> List[Dict[str, Any]]:
         result = []
