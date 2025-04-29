@@ -30,7 +30,7 @@ def generate_signed_url(key: str, expires_in: int = 3600):
             Params={
                 'Bucket': AWS_BUCKET_NAME,
                 'Key': key,
-                'ResponseContentDisposition': 'inline'  # Force inline viewing instead of download
+                'ResponseContentDisposition': 'inline'  # ✅ Force inline display instead of attachment
             },
             ExpiresIn=expires_in
         )
