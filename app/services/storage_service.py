@@ -27,7 +27,11 @@ def generate_signed_url(key: str, expires_in: int = 3600):
     try:
         url = s3_client.generate_presigned_url(
             'get_object',
-            Params={'Bucket': AWS_BUCKET_NAME, 'Key': key},
+            Params={
+                'Bucket': AWS_BUCKET_NAME,
+                'Key': key,
+                'ResponseContentDisposition': 'inline'  # Force inline viewing instead of download
+            },
             ExpiresIn=expires_in
         )
         return url
