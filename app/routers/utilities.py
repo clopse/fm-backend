@@ -1,3 +1,5 @@
+# FILE: app/api/routers/utilities.py
+
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from datetime import datetime
 from typing import Optional
@@ -21,7 +23,6 @@ async def parse_utility_pdf(file: UploadFile = File(...)):
         print(f"❌ PDF parsing error: {e}")
         raise HTTPException(status_code=400, detail=f"Parsing failed: {str(e)}")
 
-
 @router.post("/api/utilities/save-corrected", response_model=UtilityUploadResponse)
 async def save_corrected_utility_data(
     hotel_id: str = Form(...),
@@ -37,22 +38,17 @@ async def save_corrected_utility_data(
     file: UploadFile = File(...)
 ):
     try:
-        # 🚨 Validate required numbers aren't zero or missing
         if total_kwh <= 0 or total_eur <= 0:
             raise HTTPException(status_code=422, detail="Total kWh and Total € must be greater than 0.")
 
-        if not billing_start or not billing_end:
-            raise HTTPException(status_code=422, detail="Missing billing date range.")
-
-        # 🧠 Filename generation and save path
         filename_base = generate_filename_from_dates(utility_type, billing_start, billing_end)
         pdf_filename = f"{filename_base}.pdf"
         json_filename = f"{filename_base}.json"
 
-        # 🗂 Save PDF to S3 or local
-        pdf_path = save_file(file, hotel_id, "utilities", pdf_filename)
+        # Save PDF
+        pdf_path = save_file(file, hotel_id, f"utilities/{utility_type}", pdf_filename)
 
-        # 📝 Metadata save
+        # Save JSON
         metadata = {
             "utility_type": utility_type,
             "billing_start": billing_start,
@@ -67,19 +63,17 @@ async def save_corrected_utility_data(
         }
 
         json_path = pdf_path.replace(".pdf", ".json")
+
         with open(json_path, "w") as f:
             json.dump(metadata, f, indent=2)
 
-        print(f"✅ Saved to {pdf_path} and {json_path}")
-
+        print(f"✅ Saved utility bill and metadata to: {pdf_path}")
         return UtilityUploadResponse(
             message="Utility bill uploaded and saved",
             file_path=pdf_path,
             metadata_path=json_path
         )
 
-    except HTTPException as he:
-        raise he
     except Exception as e:
         print(f"❌ Error saving corrected utility: {e}")
         raise HTTPException(status_code=500, detail=f"Error saving corrected utility: {e}")
