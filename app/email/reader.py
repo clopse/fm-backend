@@ -4,7 +4,7 @@ import re
 from datetime import datetime
 import fitz  # PyMuPDF
 
-SUPPLIER_DATA_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/suppliers.json"))
+SUPPLIER_DATA_PATH = os.path.abspath("src/data/suppliers.json")
 
 def load_suppliers():
     try:
