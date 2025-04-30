@@ -1,4 +1,4 @@
-# FILE: app/api/routers/utilities.py
+# ✅ FILE: app/routers/utilities.py
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from datetime import datetime
@@ -13,7 +13,7 @@ from app.utils.s3_utils import generate_filename_from_dates
 
 router = APIRouter()
 
-@router.post("/api/utilities/parse-pdf")
+@router.post("/parse-pdf")
 async def parse_utility_pdf(file: UploadFile = File(...)):
     try:
         content = await file.read()
@@ -23,7 +23,7 @@ async def parse_utility_pdf(file: UploadFile = File(...)):
         print(f"❌ PDF parsing error: {e}")
         raise HTTPException(status_code=400, detail=f"Parsing failed: {str(e)}")
 
-@router.post("/api/utilities/save-corrected", response_model=UtilityUploadResponse)
+@router.post("/save-corrected", response_model=UtilityUploadResponse)
 async def save_corrected_utility_data(
     hotel_id: str = Form(...),
     utility_type: str = Form(...),
@@ -45,10 +45,10 @@ async def save_corrected_utility_data(
         pdf_filename = f"{filename_base}.pdf"
         json_filename = f"{filename_base}.json"
 
-        # Save PDF
+        # Save PDF to /utilities/{type}/
         pdf_path = save_file(file, hotel_id, f"utilities/{utility_type}", pdf_filename)
 
-        # Save JSON
+        # Save metadata JSON
         metadata = {
             "utility_type": utility_type,
             "billing_start": billing_start,
@@ -63,7 +63,6 @@ async def save_corrected_utility_data(
         }
 
         json_path = pdf_path.replace(".pdf", ".json")
-
         with open(json_path, "w") as f:
             json.dump(metadata, f, indent=2)
 
