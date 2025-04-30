@@ -1,0 +1,30 @@
+[
+  {
+    "name": "Arden Energy",
+    "aliases": ["arden", "arden energy", "ardenenergy", "ardenenergy.ie"]
+  },
+  {
+    "name": "Pinergy",
+    "aliases": ["pinergy"]
+  },
+  {
+    "name": "Energia",
+    "aliases": ["energia"]
+  },
+  {
+    "name": "Bord Gáis",
+    "aliases": ["bord gáis", "bordgais", "bordgáis"]
+  },
+  {
+    "name": "Electric Ireland",
+    "aliases": ["electric ireland", "electricireland"]
+  },
+  {
+    "name": "Flogas",
+    "aliases": ["flogas"]
+  },
+  {
+    "name": "SSE Airtricity",
+    "aliases": ["sse", "airtricity", "sse airtricity"]
+  }
+]
