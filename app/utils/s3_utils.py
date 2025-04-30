@@ -1,29 +1,10 @@
-from datetime import datetime
+# FILE: app/utils/s3_utils.py
 
-def month_short_name(date_str):
-    """Helper to get short month name from DD-MMM-YY format"""
+def generate_filename_from_dates(utility_type: str, billing_start: str, billing_end: str) -> str:
+    """Generate a clean filename like 'gas01-31' from billing period dates."""
     try:
-        parsed = datetime.strptime(date_str, "%d-%b-%y")
-        return parsed.strftime("%b").lower(), parsed.strftime("%d")
-    except ValueError:
-        return "invalid", "xx"
-
-def generate_filename_from_dates(utility_type: str, start: str, end: str) -> str:
-    """
-    Builds filename like:
-    - gas_jan06-feb06
-    - elec_feb07-mar08
-    """
-    start_month, start_day = month_short_name(start)
-    end_month, end_day = month_short_name(end)
-
-    if "electric" in utility_type.lower():
-        prefix = "elec"
-    elif "gas" in utility_type.lower():
-        prefix = "gas"
-    elif "water" in utility_type.lower():
-        prefix = "water"
-    else:
-        prefix = "util"
-
-    return f"{prefix}_{start_month}{start_day}-{end_month}{end_day}"
+        start_day = billing_start.split("-")[0].zfill(2)
+        end_day = billing_end.split("-")[0].zfill(2)
+        return f"{utility_type[:4].lower()}{start_day}-{end_day}"
+    except Exception:
+        return f"{utility_type[:4].lower()}-unknown"
