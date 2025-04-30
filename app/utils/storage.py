@@ -1,3 +1,5 @@
+# ✅ FILE: app/utils/storage.py
+
 import os
 from datetime import datetime
 from uuid import uuid4
@@ -8,25 +10,19 @@ if settings.USE_S3:
     from botocore.exceptions import BotoCoreError
 
 BASE_STORAGE_PATH = "storage"
-BUCKET_NAME = "jmk-facilities"  # 🔁 replace with your actual S3 bucket name
+BUCKET_NAME = "jmk-project-uploads"
+
 
 def get_file_path(hotel_id: str, year: str, section: str, filename: str) -> str:
-    """
-    Returns the full file path (local or S3 key).
-    If USE_S3 is enabled, uploads the file and returns the S3 key.
-    """
     if settings.USE_S3:
         return f"{hotel_id}/{year}/{section}/{filename}"
     else:
         return os.path.join(BASE_STORAGE_PATH, hotel_id, year, section, filename)
 
-def save_file(file, hotel_id: str, section: str) -> str:
-    """
-    Save a file (UploadFile) to local or S3.
-    Returns the file path (or S3 key).
-    """
+
+def save_file(file, hotel_id: str, section: str, filename: str = None) -> str:
     year = str(datetime.now().year)
-    filename = f"{uuid4()}_{file.filename}"
+    filename = filename or f"{uuid4()}_{file.filename}"
     file_path = get_file_path(hotel_id, year, section, filename)
 
     if settings.USE_S3:
