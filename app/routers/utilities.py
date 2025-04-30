@@ -1,40 +1,77 @@
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from datetime import datetime
 import os
 import json
 
-from app.database import get_db
 from app.utils.storage import save_file
-from app.schemas.utilities import UtilityUploadResponse  # ✅ Pydantic model
+from app.email.reader import parse_pdf
+from app.schemas.utilities import UtilityUploadResponse  # Define if not present
+from app.utils.s3_utils import generate_filename_from_dates
 
 router = APIRouter()
 
-@router.post("/uploads/utilities", response_model=UtilityUploadResponse)
-async def upload_utility_file(
-    hotel_id: str = Form(...),
-    utility_type: str = Form(...),  # e.g., "electric", "gas", "water"
-    bill_date: str = Form(...),
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
+
+@router.post("/api/utilities/parse-pdf")
+async def parse_utility_pdf(
+    file: UploadFile = File(...)
 ):
-    file_path = save_file(file, hotel_id, "utilities", utility_type)
+    try:
+        content = await file.read()
+        parsed = parse_pdf(content)
+        return parsed
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Parsing failed: {str(e)}")
 
-    metadata = {
-        "utility_type": utility_type,
-        "bill_date": bill_date,
-        "uploaded_at": datetime.utcnow().strftime("%Y-%m-%d"),
-        "filename": file.filename
-    }
 
-    json_filename = os.path.splitext(os.path.basename(file_path))[0] + ".json"
-    json_path = os.path.join(os.path.dirname(file_path), json_filename)
+@router.post("/api/utilities/save-corrected", response_model=UtilityUploadResponse)
+async def save_corrected_utility_data(
+    hotel_id: str = Form(...),
+    utility_type: str = Form(...),  # gas, electricity, water
+    billing_start: str = Form(...),  # format: DD-MMM-YY
+    billing_end: str = Form(...),    # format: DD-MMM-YY
+    total_kwh: float = Form(...),
+    total_eur: float = Form(...),
+    day_kwh: float = Form(None),
+    night_kwh: float = Form(None),
+    subtotal_eur: float = Form(None),
+    confidence_score: int = Form(None),
+    file: UploadFile = File(...)
+):
+    try:
+        # Generate filename based on dates
+        filename_base = generate_filename_from_dates(utility_type, billing_start, billing_end)
 
-    with open(json_path, "w") as f:
-        json.dump(metadata, f, indent=2)
+        year = str(datetime.now().year)
+        pdf_filename = f"{filename_base}.pdf"
+        json_filename = f"{filename_base}.json"
 
-    return UtilityUploadResponse(
-        message="Utility bill uploaded",
-        file_path=file_path,
-        metadata_path=json_path
-    )
+        # Save PDF
+        pdf_path = save_file(file, hotel_id, "utilities", pdf_filename)
+
+        # Save JSON
+        metadata = {
+            "utility_type": utility_type,
+            "billing_start": billing_start,
+            "billing_end": billing_end,
+            "total_kwh": total_kwh,
+            "total_eur": total_eur,
+            "day_kwh": day_kwh,
+            "night_kwh": night_kwh,
+            "subtotal_eur": subtotal_eur,
+            "confidence_score": confidence_score,
+            "uploaded_at": datetime.utcnow().strftime("%Y-%m-%d")
+        }
+
+        json_path = pdf_path.replace(".pdf", ".json")
+
+        with open(json_path, "w") as f:
+            json.dump(metadata, f, indent=2)
+
+        return UtilityUploadResponse(
+            message="Utility bill uploaded and saved",
+            file_path=pdf_path,
+            metadata_path=json_path
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error saving corrected utility: {e}")
