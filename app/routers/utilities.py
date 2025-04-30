@@ -5,30 +5,28 @@ import json
 
 from app.utils.storage import save_file
 from app.email.reader import parse_pdf
-from app.schemas.utilities import UtilityUploadResponse  # Define if not present
+from app.schemas.utilities import UtilityUploadResponse
 from app.utils.s3_utils import generate_filename_from_dates
 
 router = APIRouter()
 
-
 @router.post("/api/utilities/parse-pdf")
-async def parse_utility_pdf(
-    file: UploadFile = File(...)
-):
+async def parse_utility_pdf(file: UploadFile = File(...)):
     try:
         content = await file.read()
         parsed = parse_pdf(content)
         return parsed
     except Exception as e:
+        print(f"❌ PDF parsing error: {e}")
         raise HTTPException(status_code=400, detail=f"Parsing failed: {str(e)}")
 
 
 @router.post("/api/utilities/save-corrected", response_model=UtilityUploadResponse)
 async def save_corrected_utility_data(
     hotel_id: str = Form(...),
-    utility_type: str = Form(...),  # gas, electricity, water
-    billing_start: str = Form(...),  # format: DD-MMM-YY
-    billing_end: str = Form(...),    # format: DD-MMM-YY
+    utility_type: str = Form(...),
+    billing_start: str = Form(...),
+    billing_end: str = Form(...),
     total_kwh: float = Form(...),
     total_eur: float = Form(...),
     day_kwh: float = Form(None),
@@ -38,7 +36,6 @@ async def save_corrected_utility_data(
     file: UploadFile = File(...)
 ):
     try:
-        # Generate filename based on dates
         filename_base = generate_filename_from_dates(utility_type, billing_start, billing_end)
 
         year = str(datetime.now().year)
@@ -74,4 +71,5 @@ async def save_corrected_utility_data(
         )
 
     except Exception as e:
+        print(f"❌ Error saving corrected utility: {e}")
         raise HTTPException(status_code=500, detail=f"Error saving corrected utility: {e}")
