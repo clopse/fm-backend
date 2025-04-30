@@ -1,32 +1,39 @@
 from fastapi import APIRouter, HTTPException
 from typing import List, Dict, Any
+from urllib.parse import unquote
+
 from app.services.storage_service import list_files, generate_signed_url
 
 router = APIRouter()
 
+
 def build_recursive_tree(file_keys: List[str]) -> List[Dict[str, Any]]:
+    """
+    Builds a recursive folder structure from a flat list of S3 keys.
+    Only includes 'reports' and 'contracts' subfolders under each hotel.
+    """
     tree: Dict[str, Any] = {}
 
     for key in file_keys:
         if key.endswith('/'):
             continue
 
-        # Skip the first part (hotelId)
+        # Skip the first segment (hotelId)
         parts = key.strip('/').split('/')[1:]
 
-        # Only include 'contracts' and 'reports'
         if not parts or parts[0] not in ['contracts', 'reports']:
             continue
 
         current = tree
         for i, part in enumerate(parts):
             if i == len(parts) - 1:
-                # File node (defer signed URL to route)
+                # This is a file
                 current.setdefault(part, {
                     "name": part,
                     "path": '/'.join(parts)
                 })
             else:
+                # This is a folder
                 current = current.setdefault(part, {
                     "name": part,
                     "children": {}
@@ -42,8 +49,12 @@ def build_recursive_tree(file_keys: List[str]) -> List[Dict[str, Any]]:
 
     return convert_to_list(tree)
 
+
 @router.get("/files/tree/{hotel_id}")
 async def get_recursive_file_tree(hotel_id: str) -> List[Dict[str, Any]]:
+    """
+    Returns a recursive tree of all files for a given hotel under /reports and /contracts.
+    """
     try:
         prefix = f"{hotel_id}/"
         objects = list_files(prefix)
@@ -52,10 +63,15 @@ async def get_recursive_file_tree(hotel_id: str) -> List[Dict[str, Any]]:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error building file tree: {str(e)}")
 
+
 @router.get("/reports/{hotel_id}/{path:path}")
 async def get_service_report_file(hotel_id: str, path: str):
-    key = f"{hotel_id}/{path}"
+    """
+    Returns a signed URL for a report file located at /{hotel_id}/reports/... path.
+    """
     try:
+        decoded_path = unquote(path)  # Decode URL-encoded slashes and spaces
+        key = f"{hotel_id}/{decoded_path}"
         signed_url = generate_signed_url(key)
         return {"url": signed_url}
     except Exception as e:
