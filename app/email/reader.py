@@ -1,15 +1,10 @@
-import sys
 import os
 import json
 import re
 from datetime import datetime
 import fitz  # PyMuPDF
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
-from app.utils.excel_writer import update_energy_excel
-
 SUPPLIER_DATA_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../data/suppliers.json"))
-DEFAULT_HOTEL = "hiex"
 
 def load_suppliers():
     try:
@@ -25,7 +20,9 @@ def detect_supplier_from_text(text):
     for supplier in SUPPLIERS:
         for alias in supplier["aliases"]:
             if alias.lower() in text.lower():
+                print(f"✅ Matched supplier alias: {alias}")
                 return supplier
+    print("⚠️ No matching supplier found.")
     return None
 
 def parse_arden_energy_bill(text):
@@ -52,7 +49,7 @@ def parse_arden_energy_bill(text):
     if match:
         data["subtotal_eur"] = float(match.group(1).replace(",", ""))
 
-    # Estimate subtotal if missing but total is available
+    # Estimate subtotal if missing
     if not data.get("subtotal_eur") and data.get("total_eur"):
         data["subtotal_eur"] = round(data["total_eur"] / 1.09, 2)
         data["subtotal_eur_estimated"] = True
@@ -71,7 +68,10 @@ def parse_arden_energy_bill(text):
 def extract_text_from_pdf_from_bytes(pdf_bytes):
     try:
         with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
-            return "".join(page.get_text() for page in doc)
+            text = "".join(page.get_text() for page in doc)
+            print("📄 Extracted PDF text (first 1000 chars):")
+            print(text[:1000])
+            return text
     except Exception as e:
         print(f"⚠️ Error reading PDF: {e}")
         return ""
@@ -87,8 +87,12 @@ def calculate_confidence(data):
     if "subtotal_eur" not in data: score -= 20
     return max(score, 0)
 
-def parse_pdf(pdf_bytes: bytes, hotel: str = "hiex"):
+def parse_pdf(pdf_bytes: bytes, hotel: str = "unknown"):
     text = extract_text_from_pdf_from_bytes(pdf_bytes)
+
+    if not text.strip():
+        raise ValueError("PDF text could not be extracted.")
+
     supplier = detect_supplier_from_text(text)
 
     if not supplier:
@@ -99,4 +103,4 @@ def parse_pdf(pdf_bytes: bytes, hotel: str = "hiex"):
         data["confidence_score"] = calculate_confidence(data)
         return data
 
-    raise ValueError(f"No parser for supplier: {supplier['name']}")
+    raise ValueError(f"No parser implemented for supplier: {supplier['name']}")
