@@ -1,5 +1,6 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from datetime import datetime
+from typing import Optional
 import os
 import json
 
@@ -29,23 +30,29 @@ async def save_corrected_utility_data(
     billing_end: str = Form(...),
     total_kwh: float = Form(...),
     total_eur: float = Form(...),
-    day_kwh: float = Form(None),
-    night_kwh: float = Form(None),
-    subtotal_eur: float = Form(None),
-    confidence_score: int = Form(None),
+    day_kwh: Optional[float] = Form(None),
+    night_kwh: Optional[float] = Form(None),
+    subtotal_eur: Optional[float] = Form(None),
+    confidence_score: Optional[int] = Form(None),
     file: UploadFile = File(...)
 ):
     try:
-        filename_base = generate_filename_from_dates(utility_type, billing_start, billing_end)
+        # 🚨 Validate required numbers aren't zero or missing
+        if total_kwh <= 0 or total_eur <= 0:
+            raise HTTPException(status_code=422, detail="Total kWh and Total € must be greater than 0.")
 
-        year = str(datetime.now().year)
+        if not billing_start or not billing_end:
+            raise HTTPException(status_code=422, detail="Missing billing date range.")
+
+        # 🧠 Filename generation and save path
+        filename_base = generate_filename_from_dates(utility_type, billing_start, billing_end)
         pdf_filename = f"{filename_base}.pdf"
         json_filename = f"{filename_base}.json"
 
-        # Save PDF
+        # 🗂 Save PDF to S3 or local
         pdf_path = save_file(file, hotel_id, "utilities", pdf_filename)
 
-        # Save JSON
+        # 📝 Metadata save
         metadata = {
             "utility_type": utility_type,
             "billing_start": billing_start,
@@ -60,9 +67,10 @@ async def save_corrected_utility_data(
         }
 
         json_path = pdf_path.replace(".pdf", ".json")
-
         with open(json_path, "w") as f:
             json.dump(metadata, f, indent=2)
+
+        print(f"✅ Saved to {pdf_path} and {json_path}")
 
         return UtilityUploadResponse(
             message="Utility bill uploaded and saved",
@@ -70,6 +78,8 @@ async def save_corrected_utility_data(
             metadata_path=json_path
         )
 
+    except HTTPException as he:
+        raise he
     except Exception as e:
         print(f"❌ Error saving corrected utility: {e}")
         raise HTTPException(status_code=500, detail=f"Error saving corrected utility: {e}")
