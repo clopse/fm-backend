@@ -1,8 +1,8 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from datetime import datetime
 from typing import Optional
-import os
 import json
+from io import BytesIO
 
 from app.utils.storage import save_file
 from app.email.reader import parse_pdf
@@ -22,6 +22,7 @@ async def parse_utility_pdf(file: UploadFile = File(...)):
         print(f"❌ PDF parsing error: {e}")
         raise HTTPException(status_code=400, detail=f"Parsing failed: {str(e)}")
 
+
 @router.post("/api/utilities/save-corrected", response_model=UtilityUploadResponse)
 async def save_corrected_utility_data(
     hotel_id: str = Form(...),
@@ -40,14 +41,15 @@ async def save_corrected_utility_data(
         if total_kwh <= 0 or total_eur <= 0:
             raise HTTPException(status_code=422, detail="Total kWh and Total € must be greater than 0.")
 
+        folder = f"utilities/{utility_type}"
         filename_base = generate_filename_from_dates(utility_type, billing_start, billing_end)
         pdf_filename = f"{filename_base}.pdf"
         json_filename = f"{filename_base}.json"
 
-        # Save PDF to /utilities/{type}/
-        pdf_path = save_file(file, hotel_id, f"utilities/{utility_type}", pdf_filename)
+        # Save PDF
+        pdf_path = save_file(file, hotel_id, folder, pdf_filename)
 
-        # Save metadata JSON
+        # Save JSON
         metadata = {
             "utility_type": utility_type,
             "billing_start": billing_start,
@@ -61,9 +63,9 @@ async def save_corrected_utility_data(
             "uploaded_at": datetime.utcnow().strftime("%Y-%m-%d")
         }
 
-        json_path = pdf_path.replace(".pdf", ".json")
-        with open(json_path, "w") as f:
-            json.dump(metadata, f, indent=2)
+        json_bytes = BytesIO(json.dumps(metadata, indent=2).encode("utf-8"))
+        json_upload = UploadFile(filename=json_filename, file=json_bytes, content_type="application/json")
+        json_path = save_file(json_upload, hotel_id, folder, json_filename)
 
         print(f"✅ Saved utility bill and metadata to: {pdf_path}")
         return UtilityUploadResponse(
