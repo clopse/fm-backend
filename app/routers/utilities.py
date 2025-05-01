@@ -64,8 +64,7 @@ async def save_corrected_utility_data(
         }
 
         json_bytes = BytesIO(json.dumps(metadata, indent=2).encode("utf-8"))
-        json_upload = UploadFile(filename=json_filename, file=json_bytes, content_type="application/json")
-        json_path = save_file(json_upload, hotel_id, folder, json_filename)
+        json_path = save_file(json_bytes, hotel_id, folder, json_filename)
 
         print(f"✅ Saved utility bill and metadata to: {pdf_path}")
         return UtilityUploadResponse(
