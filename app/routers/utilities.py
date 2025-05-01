@@ -41,7 +41,9 @@ async def save_corrected_utility_data(
         if total_kwh <= 0 or total_eur <= 0:
             raise HTTPException(status_code=422, detail="Total kWh and Total € must be greater than 0.")
 
-        folder = f"utilities/{utility_type}"
+        # Flatten structure: store under utilities/{year}/
+        year = str(datetime.now().year)
+        folder = f"utilities/{year}"
         filename_base = generate_filename_from_dates(utility_type, billing_start, billing_end)
         pdf_filename = f"{filename_base}.pdf"
         json_filename = f"{filename_base}.json"
