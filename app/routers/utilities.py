@@ -1,5 +1,3 @@
-# ✅ FILE: app/routers/utilities.py
-
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from datetime import datetime
 from typing import Optional
@@ -13,7 +11,8 @@ from app.utils.s3_utils import generate_filename_from_dates
 
 router = APIRouter()
 
-@router.post("/parse-pdf")
+# Use full route paths to match frontend fetches
+@router.post("/api/utilities/parse-pdf")
 async def parse_utility_pdf(file: UploadFile = File(...)):
     try:
         content = await file.read()
@@ -23,7 +22,7 @@ async def parse_utility_pdf(file: UploadFile = File(...)):
         print(f"❌ PDF parsing error: {e}")
         raise HTTPException(status_code=400, detail=f"Parsing failed: {str(e)}")
 
-@router.post("/save-corrected", response_model=UtilityUploadResponse)
+@router.post("/api/utilities/save-corrected", response_model=UtilityUploadResponse)
 async def save_corrected_utility_data(
     hotel_id: str = Form(...),
     utility_type: str = Form(...),
