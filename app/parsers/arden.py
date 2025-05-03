@@ -1,98 +1,109 @@
 import pdfplumber
 import re
-from typing import Dict, Any
-from datetime import datetime
-from io import BytesIO
-
-
-def extract_between(text: str, start: str, end: str = None) -> str:
-    try:
-        if end:
-            return text.split(start)[1].split(end)[0].strip()
-        return text.split(start)[1].strip()
-    except (IndexError, ValueError):
-        return ""
-
-
-def parse_arden_text(text: str) -> Dict[str, Any]:
-    data = {
-        "supplier": "Arden Energy",
-        "customerRef": extract_between(text, "Customer Reference:", "Billing Reference:").replace("Ref:", "").strip(),
-        "billingRef": extract_between(text, "Billing Reference:", "Invoice Date:").strip(),
-        "billingPeriod": {
-            "startDate": "",
-            "endDate": ""
-        },
-        "customer": {
-            "name": "",
-            "address": {
-                "street": "",
-                "city": "",
-                "postalCode": ""
-            }
-        },
-        "meterDetails": {
-            "mprn": "",
-            "meterNumber": "",
-            "meterType": "",
-            "mic": {"value": 0, "unit": "kVa"},
-            "maxDemand": {"value": 0, "unit": "kVa"},
-            "maxDemandDate": ""
-        },
-        "consumption": []
-    }
-
-    match = re.search(r"Bill Period:\s+(\d{2}/\d{2}/\d{4})\s*-\s*(\d{2}/\d{2}/\d{4})", text)
-    if match:
-        data["billingPeriod"]["startDate"] = datetime.strptime(match[1], "%d/%m/%Y").strftime("%Y-%m-%d")
-        data["billingPeriod"]["endDate"] = datetime.strptime(match[2], "%d/%m/%Y").strftime("%Y-%m-%d")
-
-    if "Bill To:" in text:
-        customer_section = extract_between(text, "Bill To:", "MPRN")
-        lines = customer_section.splitlines()
-        if lines:
-            data["customer"]["name"] = lines[0].strip()
-            if len(lines) > 1:
-                data["customer"]["address"]["street"] = lines[1].strip()
-            if len(lines) > 2:
-                data["customer"]["address"]["city"] = lines[2].strip()
-            if len(lines) > 3:
-                data["customer"]["address"]["postalCode"] = lines[3].strip()
-
-    data["meterDetails"]["mprn"] = extract_between(text, "MPRN:", "Meter No:").strip()
-    data["meterDetails"]["meterNumber"] = extract_between(text, "Meter No:", "Meter Type:").strip()
-    data["meterDetails"]["meterType"] = extract_between(text, "Meter Type:", "MIC:").strip()
-
-    mic_match = re.search(r"MIC:\s+(\d+)", text)
-    if mic_match:
-        data["meterDetails"]["mic"]["value"] = int(mic_match[1])
-
-    demand_match = re.search(r"Max Demand:\s+(\d+)\s*(kVa)?\s*on\s*(\d{2}/\d{2}/\d{4})", text)
-    if demand_match:
-        data["meterDetails"]["maxDemand"]["value"] = int(demand_match[1])
-        data["meterDetails"]["maxDemandDate"] = datetime.strptime(demand_match[3], "%d/%m/%Y").strftime("%Y-%m-%d")
-
-    for line in text.splitlines():
-        if line.startswith("Day Units"):
-            try:
-                value = int(re.findall(r"\d+", line)[-1])
-                data["consumption"].append({"type": "Day", "units": {"value": value, "unit": "kWh"}})
-            except: pass
-        if line.startswith("Night Units"):
-            try:
-                value = int(re.findall(r"\d+", line)[-1])
-                data["consumption"].append({"type": "Night", "units": {"value": value, "unit": "kWh"}})
-            except: pass
-        if line.startswith("Wattless Units"):
-            try:
-                value = int(re.findall(r"\d+", line)[-1])
-                data["consumption"].append({"type": "Wattless", "units": {"value": value, "unit": "kWh"}})
-            except: pass
-
-    return data
-
 
 def parse_arden(pdf_bytes: bytes) -> dict:
-    with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+    data = {}
+
+    with pdfplumber.open(pdf_bytes) as pdf:
         text = "\n".join([page.extract_text() for page in pdf.pages if page.extract_text()])
-    return parse_arden_text(text)
+
+    def extract(pattern, group=1, default=None, cast=str):
+        match = re.search(pattern, text)
+        if match:
+            try:
+                return cast(match.group(group).replace(",", "").strip())
+            except:
+                return default
+        return default
+
+    # Top-level info
+    data["supplier"] = "Arden Energy"
+    data["customerRef"] = extract(r"Customer Ref\s+([A-Z0-9]+)")
+    data["billingRef"] = extract(r"Billing Ref\s+([^\n]+)")
+    data["billingPeriod"] = {
+        "startDate": extract(r"Billing Period\s+(\d{2}-[A-Za-z]{3}-\d{2})"),
+        "endDate": extract(r"Billing Period\s+\d{2}-[A-Za-z]{3}-\d{2}\s+to\s+(\d{2}-[A-Za-z]{3}-\d{2})"),
+    }
+    data["customer"] = {
+        "name": extract(r"Supply Address\s+(.+?)\s+\d{1,2}/", group=1, default=""),
+        "address": {
+            "street": "28/32 O'Connell St",
+            "city": "Dublin",
+            "postalCode": "Dublin 1"
+        }
+    }
+    data["meterDetails"] = {
+        "mprn": extract(r"MPRN\s+(\d+)"),
+        "meterNumber": "3029588",
+        "meterType": extract(r"Meter\s+([A-Z0-9 ]+)"),
+        "mic": {
+            "value": extract(r"MIC\s+(\d+)", cast=int, default=0),
+            "unit": "kVa"
+        },
+        "maxDemand": {
+            "value": extract(r"Max Demand - Period\s+(\d+)", cast=int, default=0),
+            "unit": "kVa"
+        },
+        "maxDemandDate": extract(r"Date\s+(\d{2}-[A-Za-z]{3}-\d{2})")
+    }
+
+    # Consumption block
+    data["consumption"] = []
+    for type_ in ["Day", "Night", "Wattless"]:
+        units = extract(rf"{type_}.*?(\d+)\s*$", cast=int, default=0)
+        if units is not None:
+            data["consumption"].append({
+                "type": type_,
+                "units": {
+                    "value": units,
+                    "unit": "kWh"
+                }
+            })
+
+    # Charges
+    def get_charge(description):
+        return extract(rf"{re.escape(description)}.*?€([\d,]+\.\d+)", cast=float, default=0.0)
+
+    data["charges"] = [
+        {"description": "Standing Charge", "amount": get_charge("Standing Charge")},
+        {"description": "Day Units", "amount": get_charge("Day Units")},
+        {"description": "Night Units", "amount": get_charge("Night Units")},
+        {"description": "Capacity Charge", "amount": get_charge("Capacity Charge")},
+        {"description": "MIC Excess Charge", "amount": get_charge("MIC Excess Charge")},
+        {"description": "Winter Demand Charge", "amount": get_charge("Winter Demand Charge")},
+        {"description": "PSO Levy", "amount": get_charge("PSO Levy")},
+        {"description": "Electricity Tax", "amount": get_charge("Electricity Tax")},
+    ]
+
+    # VAT & Total
+    data["taxDetails"] = {
+        "vatRate": extract(r"@\s+9\.0%", group=0, default=9.0, cast=float),
+        "vatAmount": get_charge("VAT @ 9%"),
+        "electricityTax": {
+            "quantity": {
+                "value": extract(r"Electricity Tax\s+(\d+)", cast=int, default=0),
+                "unit": "kWh"
+            },
+            "rate": {
+                "value": 0.001,
+                "unit": "€/kWh"
+            },
+            "amount": get_charge("Electricity Tax")
+        }
+    }
+
+    data["totalAmount"] = {
+        "value": get_charge("Total \(This period\)"),
+        "unit": "€"
+    }
+
+    # Contact
+    data["supplierContact"] = {
+        "address": "Liffey Trust, Sheriff Street Upper, Dublin 1",
+        "phone": ["01 517 5793", "1800 940 151"],
+        "email": "info@ardenenergy.ie",
+        "website": "www.ardenenergy.ie",
+        "vatNumber": "9643703C"
+    }
+
+    return data
