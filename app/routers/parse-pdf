@@ -1,13 +1,43 @@
 from fastapi import APIRouter, UploadFile, File
 from fastapi.responses import JSONResponse
-from app.parsers.arden import parse_arden  # Adjust path if different
+from app.parsers.arden import parse_arden
+from datetime import datetime
 
 router = APIRouter()
+
+def to_iso(datestr: str) -> str:
+    """Convert '01-Jan-25' to '2025-01-01'"""
+    try:
+        return datetime.strptime(datestr, "%d-%b-%y").strftime("%Y-%m-%d")
+    except:
+        return ""
 
 @router.post("/utilities/parse-pdf")
 async def parse_pdf(file: UploadFile = File(...)):
     try:
-        parsed_data = await parse_arden(file)
-        return parsed_data
+        raw = await parse_arden(file)
+
+        charges = {c["description"]: c["amount"] for c in raw.get("charges", [])}
+        consumption = {c["type"].lower(): c["units"]["value"] for c in raw.get("consumption", [])}
+
+        parsed = {
+            "billing_start": to_iso(raw["billingPeriod"]["startDate"]),
+            "billing_end": to_iso(raw["billingPeriod"]["endDate"]),
+            "day_kwh": str(consumption.get("day", "")),
+            "night_kwh": str(consumption.get("night", "")),
+            "mic": str(raw["meterDetails"]["mic"]["value"]),
+            "day_rate": "",  # Not available in current parser, can be added if needed
+            "night_rate": "",  # Same
+            "day_total": str(charges.get("Day Units", "")),
+            "night_total": str(charges.get("Night Units", "")),
+            "capacity_charge": str(charges.get("Capacity Charge", "")),
+            "pso_levy": str(charges.get("PSO Levy", "")),
+            "electricity_tax": str(raw["taxDetails"]["electricityTax"]["amount"]),
+            "vat": str(raw["taxDetails"]["vatAmount"]),
+            "total_amount": str(raw["totalAmount"]["value"]),
+        }
+
+        return parsed
+
     except Exception as e:
-        return JSONResponse(status_code=500, content={"detail": str(e)})
+        return JSONResponse(status_code=500, content={"detail": f"Parse failed: {str(e)}"})
