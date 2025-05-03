@@ -1,0 +1,13 @@
+from fastapi import APIRouter, UploadFile, File
+from fastapi.responses import JSONResponse
+from app.parsers.arden import parse_arden  # Adjust path if different
+
+router = APIRouter()
+
+@router.post("/utilities/parse-pdf")
+async def parse_pdf(file: UploadFile = File(...)):
+    try:
+        parsed_data = await parse_arden(file)
+        return parsed_data
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"detail": str(e)})
