@@ -1,10 +1,10 @@
-print("✅ parser.py is being imported")
-
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+api import APIRouter, UploadFile, File, Form, HTTPException
 from datetime import datetime
 from typing import Optional
 import json
 from io import BytesIO
+import os
+
 
 from app.parsers.arden import parse_arden
 from app.parsers.flogas import parse_flogas
@@ -15,7 +15,7 @@ from app.utils.s3_utils import upload_to_s3, generate_filename_from_dates
 
 router = APIRouter()
 
-@router.post("/utilities/parse-and-save", response_model=UtilityUploadResponse)
+@router.post("/api/utilities/parse-and-save", response_model=UtilityUploadResponse)
 async def parse_and_save(
     file: UploadFile = File(...),
     hotel_id: str = Form(...),
@@ -27,7 +27,7 @@ async def parse_and_save(
     try:
         content = await file.read()
 
-        # Select parser
+        # Parse PDF
         if supplier == "arden" and utility_type == "electricity":
             raw = parse_arden(content)
         elif supplier == "flogas" and utility_type == "gas":
@@ -35,7 +35,6 @@ async def parse_and_save(
         else:
             raise HTTPException(status_code=400, detail="Unsupported supplier/utility")
 
-        # Normalize and model
         normalized = normalize_fields(raw, utility_type)
         parsed = UtilityBill(
             **normalized,
@@ -45,7 +44,7 @@ async def parse_and_save(
             raw_data=raw
         )
 
-        # S3 save
+        # S3 Save
         year = billing_start[:4]
         folder = f"{hotel_id}/{year}/{utility_type}"
         base = generate_filename_from_dates(utility_type, billing_start, billing_end)
@@ -59,9 +58,10 @@ async def parse_and_save(
         return UtilityUploadResponse(
             message="Utility bill uploaded and parsed",
             file_path=pdf_key,
-            metadata_path=json_key
+            metadata_path=json_key,
+            parsed_data=parsed.dict()  # ✅ Return full parsed data for frontend auto-fill
         )
 
     except Exception as e:
-        print(f"❌ Error parsing and saving: {e}")
+        print(f"❌ Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
