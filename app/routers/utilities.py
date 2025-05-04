@@ -1,13 +1,23 @@
 from fastapi import APIRouter, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 from app.parsers.arden import parse_arden
+from datetime import datetime
 
 router = APIRouter()
+
+def to_iso(datestr: str) -> str:
+    """Convert '01-Jan-25' to '2025-01-01'"""
+    try:
+        return datetime.strptime(datestr, "%d-%b-%y").strftime("%Y-%m-%d")
+    except:
+        return ""
 
 @router.post("/utilities/parse-pdf")
 async def parse_pdf(file: UploadFile = File(...)):
     try:
-        raw = await parse_arden(file)
+        contents = await file.read()         # ✅ Read raw bytes
+        raw = parse_arden(contents)          # ✅ Pass bytes to parser
+
         charges = {c["description"]: c["amount"] for c in raw.get("charges", [])}
         consumption = {c["type"].lower(): c["units"]["value"] for c in raw.get("consumption", [])}
 
@@ -15,8 +25,8 @@ async def parse_pdf(file: UploadFile = File(...)):
             return str(d) if d is not None else default
 
         return {
-            "billing_start": raw.get("billingPeriod", {}).get("startDate", ""),
-            "billing_end": raw.get("billingPeriod", {}).get("endDate", ""),
+            "billing_start": to_iso(raw.get("billingPeriod", {}).get("startDate", "")),
+            "billing_end": to_iso(raw.get("billingPeriod", {}).get("endDate", "")),
             "day_kwh": get(consumption.get("day")),
             "night_kwh": get(consumption.get("night")),
             "mic": get(raw.get("meterDetails", {}).get("mic", {}).get("value")),
@@ -30,9 +40,9 @@ async def parse_pdf(file: UploadFile = File(...)):
             "vat": get(raw.get("taxDetails", {}).get("vatAmount")),
             "total_amount": get(raw.get("totalAmount", {}).get("value")),
         }
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"detail": str(e)})
 
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"detail": f"Parse failed: {str(e)}"})
 
 @router.post("/utilities/parse-and-save")
 async def parse_and_save(
@@ -55,5 +65,5 @@ async def parse_and_save(
     vat: str = Form(""),
     total_amount: str = Form(""),
 ):
-    # Save file to storage and write values to DB or Excel here
+    # You can save to a DB, S3, or Excel here
     return {"message": "Saved successfully"}
