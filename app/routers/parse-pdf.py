@@ -4,40 +4,35 @@ from app.parsers.arden import parse_arden
 
 router = APIRouter()
 
-def get(value, default=""):
-    return str(value) if value is not None else default
+def safe_str(value):
+    return str(value) if value is not None else ""
 
 @router.post("/utilities/parse-pdf")
 async def parse_pdf(file: UploadFile = File(...)):
     try:
-        raw = await parse_arden(await file.read())
+        content = await file.read()
+        raw = parse_arden(content)  # ← FIXED: removed `await` from here
 
-        charges_map = {
-            c.get("description", "").lower(): c for c in raw.get("charges", [])
-        }
-        tax = raw.get("taxDetails", {})
-        total = raw.get("totalAmount", {}).get("value", "")
-
-        # Safely extract mic whether it's a plain int or dict
-        mic_value = raw.get("meterDetails", {}).get("mic")
-        mic = mic_value.get("value") if isinstance(mic_value, dict) else mic_value
+        charges = {c["description"].lower(): c for c in raw.get("charges", [])}
+        mic_data = raw.get("meterDetails", {}).get("mic")
+        mic = mic_data.get("value") if isinstance(mic_data, dict) else mic_data
 
         return {
             "billing_start": raw.get("billingPeriod", {}).get("startDate", ""),
             "billing_end": raw.get("billingPeriod", {}).get("endDate", ""),
-            "day_kwh": get(charges_map.get("day units", {}).get("quantity")),
-            "night_kwh": get(charges_map.get("night units", {}).get("quantity")),
-            "mic": get(mic),
-            "day_rate": get(charges_map.get("day units", {}).get("rate")),
-            "night_rate": get(charges_map.get("night units", {}).get("rate")),
-            "day_total": get(charges_map.get("day units", {}).get("total")),
-            "night_total": get(charges_map.get("night units", {}).get("total")),
-            "capacity_charge": get(charges_map.get("capacity charge", {}).get("total")),
-            "pso_levy": get(charges_map.get("pso levy", {}).get("total")),
-            "electricity_tax": get(tax.get("electricityTax")),
-            "vat": get(tax.get("vatAmount")),
-            "total_amount": get(total),
-            "full_data": raw  # Optional: helpful for debugging or storing the raw structure
+            "day_kwh": safe_str(charges.get("day units", {}).get("quantity")),
+            "night_kwh": safe_str(charges.get("night units", {}).get("quantity")),
+            "mic": safe_str(mic),
+            "day_rate": safe_str(charges.get("day units", {}).get("rate")),
+            "night_rate": safe_str(charges.get("night units", {}).get("rate")),
+            "day_total": safe_str(charges.get("day units", {}).get("total")),
+            "night_total": safe_str(charges.get("night units", {}).get("total")),
+            "capacity_charge": safe_str(charges.get("capacity charge", {}).get("total")),
+            "pso_levy": safe_str(charges.get("pso levy", {}).get("total")),
+            "electricity_tax": safe_str(raw.get("taxDetails", {}).get("electricityTax")),
+            "vat": safe_str(raw.get("taxDetails", {}).get("vatAmount")),
+            "total_amount": safe_str(raw.get("totalAmount", {}).get("value")),
+            "full_data": raw
         }
 
     except Exception as e:
