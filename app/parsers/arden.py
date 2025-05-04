@@ -5,10 +5,15 @@ import io
 def parse_arden(pdf_bytes: bytes) -> dict:
     data = {}
 
-    # Read text content from PDF
+    # Load PDF and extract text
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-        text = "\n".join([page.extract_text() for page in pdf.pages if page.extract_text()])
+        text = "\n".join([
+            page.extract_text()
+            for page in pdf.pages
+            if page.extract_text()
+        ])
 
+    # Helper: extract single value by regex
     def extract(pattern, group=1, default=None, cast=str):
         match = re.search(pattern, text)
         if match:
@@ -18,10 +23,11 @@ def parse_arden(pdf_bytes: bytes) -> dict:
                 return default
         return default
 
-    # Core metadata
+    # General info
     data["supplier"] = "Arden Energy"
     data["billingRef"] = extract(r"Billing Ref\s+([^\n]+)")
     data["customerRef"] = extract(r"Customer Ref\s+([A-Z0-9]+)")
+
     data["billingPeriod"] = {
         "startDate": extract(r"Billing Period\s+(\d{2}-[A-Za-z]{3}-\d{2})"),
         "endDate": extract(r"to\s+(\d{2}-[A-Za-z]{3}-\d{2})")
@@ -41,10 +47,10 @@ def parse_arden(pdf_bytes: bytes) -> dict:
         "maxDemandDate": extract(r"Date\s+(\d{2}-[A-Za-z]{3}-\d{2})")
     }
 
-    # Extract charge lines with quantities, rates, totals
+    # Charges block
     data["charges"] = []
     charge_pattern = re.compile(
-        r"^(.*?)\s+(\d+(?:,\d{3})*|\d+)?\s*(kWh|kVa|kW|days|rate)?\s*@\s*\u20ac([\d.,]+)\s*\u20ac([\d.,]+)",
+        r"^(.*?)\s+(\d+(?:,\d{3})*|\d+)?\s*(kWh|kVa|kW|days|rate)?\s*@\s*€([\d.,]+)\s*€([\d.,]+)",
         re.MULTILINE
     )
 
@@ -63,23 +69,34 @@ def parse_arden(pdf_bytes: bytes) -> dict:
             "total": float(total.replace(",", ""))
         })
 
-    # Tax breakdown
+    # Tax section
     data["taxDetails"] = {
         "electricityTax": extract(
-            r"Electricity Tax\s+(\d+(?:,\d{3})*)\s*kWh\s*@\s*\u20ac[\d,.]+\s*\u20ac([\d,.]+)",
-            group=2,
+            r"Electricity Tax\s+\d+(?:,\d{3})*\s*kWh\s*@\s*€[\d,.]+\s*€([\d,.]+)",
+            group=1,
             cast=float,
             default=0.0
         ),
-        "vatAmount": extract(r"VAT @ 9%\s+\u20ac([\d,.]+)", group=1, cast=float, default=0.0)
+        "vatAmount": extract(
+            r"VAT @ 9%\s+€([\d,.]+)",
+            group=1,
+            cast=float,
+            default=0.0
+        )
     }
 
+    # Total
     data["totalAmount"] = {
-        "value": extract(r"Total \\(This period\\)\s+\u20ac([\d,.]+)", group=1, cast=float, default=0.0),
+        "value": extract(
+            r"Total \(This period\)\s+€([\d,.]+)",
+            group=1,
+            cast=float,
+            default=0.0
+        ),
         "currency": "EUR"
     }
 
-    # Static customer address (can be dynamic later)
+    # Customer address (static for now)
     data["customer"] = {
         "name": extract(r"Supply Address\s+(.+?)\s+\d{1,2}/", group=1, default=""),
         "address": {
