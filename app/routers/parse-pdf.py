@@ -1,45 +1,44 @@
 from fastapi import APIRouter, UploadFile, File
 from fastapi.responses import JSONResponse
 from app.parsers.arden import parse_arden
-from datetime import datetime
-import io
 
 router = APIRouter()
 
-def to_iso(datestr: str) -> str:
-    """Convert '01-Jan-25' to '2025-01-01'"""
-    try:
-        return datetime.strptime(datestr, "%d-%b-%y").strftime("%Y-%m-%d")
-    except:
-        return ""
+def get(value, default=""):
+    return str(value) if value is not None else default
 
 @router.post("/utilities/parse-pdf")
 async def parse_pdf(file: UploadFile = File(...)):
     try:
-        contents = await file.read()  # ✅ read bytes from UploadFile
-        raw = parse_arden(contents)   # ✅ pass bytes to parser
+        raw = await parse_arden(await file.read())
 
-        charges = {c["description"]: c["amount"] for c in raw.get("charges", [])}
-        consumption = {c["type"].lower(): c["units"]["value"] for c in raw.get("consumption", [])}
-
-        parsed = {
-            "billing_start": to_iso(raw["billingPeriod"]["startDate"]),
-            "billing_end": to_iso(raw["billingPeriod"]["endDate"]),
-            "day_kwh": str(consumption.get("day", "")),
-            "night_kwh": str(consumption.get("night", "")),
-            "mic": str(raw["meterDetails"]["mic"]["value"]),
-            "day_rate": "",  # Not extracted
-            "night_rate": "",  # Not extracted
-            "day_total": str(charges.get("Day Units", "")),
-            "night_total": str(charges.get("Night Units", "")),
-            "capacity_charge": str(charges.get("Capacity Charge", "")),
-            "pso_levy": str(charges.get("PSO Levy", "")),
-            "electricity_tax": str(raw["taxDetails"]["electricityTax"]["amount"]),
-            "vat": str(raw["taxDetails"]["vatAmount"]),
-            "total_amount": str(raw["totalAmount"]["value"]),
+        charges_map = {
+            c.get("description", "").lower(): c for c in raw.get("charges", [])
         }
+        tax = raw.get("taxDetails", {})
+        total = raw.get("totalAmount", {}).get("value", "")
 
-        return parsed
+        # Safely extract mic whether it's a plain int or dict
+        mic_value = raw.get("meterDetails", {}).get("mic")
+        mic = mic_value.get("value") if isinstance(mic_value, dict) else mic_value
+
+        return {
+            "billing_start": raw.get("billingPeriod", {}).get("startDate", ""),
+            "billing_end": raw.get("billingPeriod", {}).get("endDate", ""),
+            "day_kwh": get(charges_map.get("day units", {}).get("quantity")),
+            "night_kwh": get(charges_map.get("night units", {}).get("quantity")),
+            "mic": get(mic),
+            "day_rate": get(charges_map.get("day units", {}).get("rate")),
+            "night_rate": get(charges_map.get("night units", {}).get("rate")),
+            "day_total": get(charges_map.get("day units", {}).get("total")),
+            "night_total": get(charges_map.get("night units", {}).get("total")),
+            "capacity_charge": get(charges_map.get("capacity charge", {}).get("total")),
+            "pso_levy": get(charges_map.get("pso levy", {}).get("total")),
+            "electricity_tax": get(tax.get("electricityTax")),
+            "vat": get(tax.get("vatAmount")),
+            "total_amount": get(total),
+            "full_data": raw  # Optional: helpful for debugging or storing the raw structure
+        }
 
     except Exception as e:
         return JSONResponse(status_code=500, content={"detail": f"Parse failed: {str(e)}"})
