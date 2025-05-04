@@ -10,24 +10,26 @@ def get_safe(d, default=""):
 @router.post("/utilities/parse-pdf")
 async def parse_pdf(file: UploadFile = File(...)):
     try:
-        raw = await parse_arden(await file.read())
+        content = await file.read()         # ✅ only this is awaited
+        raw = parse_arden(content)          # ✅ sync function, no await
 
-        # Map charges by description for easier lookup
-        charges_map = {}
-        for item in raw.get("charges", []):
-            key = item.get("description", "").lower()
-            charges_map[key] = item
+        charges_map = {
+            c.get("description", "").lower(): c
+            for c in raw.get("charges", [])
+        }
 
-        # Get totals
         tax = raw.get("taxDetails", {})
         total = raw.get("totalAmount", {}).get("value", "")
+
+        mic_raw = raw.get("meterDetails", {}).get("mic")
+        mic = mic_raw.get("value") if isinstance(mic_raw, dict) else mic_raw
 
         return {
             "billing_start": raw.get("billingPeriod", {}).get("startDate", ""),
             "billing_end": raw.get("billingPeriod", {}).get("endDate", ""),
             "day_kwh": get_safe(charges_map.get("day units", {}).get("quantity")),
             "night_kwh": get_safe(charges_map.get("night units", {}).get("quantity")),
-            "mic": get_safe(raw.get("meterDetails", {}).get("mic")),
+            "mic": get_safe(mic),
             "day_rate": get_safe(charges_map.get("day units", {}).get("rate")),
             "night_rate": get_safe(charges_map.get("night units", {}).get("rate")),
             "day_total": get_safe(charges_map.get("day units", {}).get("total")),
@@ -37,7 +39,7 @@ async def parse_pdf(file: UploadFile = File(...)):
             "electricity_tax": get_safe(tax.get("electricityTax")),
             "vat": get_safe(tax.get("vatAmount")),
             "total_amount": get_safe(total),
-            "full_data": raw  # Optional: include full raw parse for debugging/audits
+            "full_data": raw
         }
 
     except Exception as e:
@@ -65,5 +67,5 @@ async def parse_and_save(
     vat: str = Form(""),
     total_amount: str = Form(""),
 ):
-    # You can save to a DB, S3, or Excel here
+    # Save to DB, Excel, etc
     return {"message": "Saved successfully"}
