@@ -2,6 +2,7 @@ from fastapi import APIRouter, UploadFile, File
 from fastapi.responses import JSONResponse
 from app.parsers.arden import parse_arden
 from datetime import datetime
+import io
 
 router = APIRouter()
 
@@ -15,7 +16,8 @@ def to_iso(datestr: str) -> str:
 @router.post("/utilities/parse-pdf")
 async def parse_pdf(file: UploadFile = File(...)):
     try:
-        raw = await parse_arden(file)
+        contents = await file.read()  # ✅ read bytes from UploadFile
+        raw = parse_arden(contents)   # ✅ pass bytes to parser
 
         charges = {c["description"]: c["amount"] for c in raw.get("charges", [])}
         consumption = {c["type"].lower(): c["units"]["value"] for c in raw.get("consumption", [])}
@@ -26,8 +28,8 @@ async def parse_pdf(file: UploadFile = File(...)):
             "day_kwh": str(consumption.get("day", "")),
             "night_kwh": str(consumption.get("night", "")),
             "mic": str(raw["meterDetails"]["mic"]["value"]),
-            "day_rate": "",  # Not available in current parser, can be added if needed
-            "night_rate": "",  # Same
+            "day_rate": "",  # Not extracted
+            "night_rate": "",  # Not extracted
             "day_total": str(charges.get("Day Units", "")),
             "night_total": str(charges.get("Night Units", "")),
             "capacity_charge": str(charges.get("Capacity Charge", "")),
