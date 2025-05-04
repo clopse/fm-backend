@@ -76,56 +76,67 @@ def parse_arden(pdf_bytes: bytes) -> dict:
     data["billingPeriod"]["endDate"] = extract(r"to\s+(\d{2}-[A-Za-z]{3}-\d{2})")
 
     # Meter Info
-    data["meterDetails"]["mprn"] = extract(r"MPRN\s+(\d+)")
-    data["meterDetails"]["meterNumber"] = extract(r"Meter Number\s+(\d+)")
-    data["meterDetails"]["meterType"] = extract(r"Meter Type\s+([A-Za-z0-9 ]+)")
+    data["meterDetails"]["mprn"] = extract(r"(\d{11})")
+    data["meterDetails"]["meterNumber"] = extract(r"Meter No\s+(\d+)")
+    data["meterDetails"]["meterType"] = extract(r"Meter\s+([A-Z0-9 ]+)")
     data["meterDetails"]["mic"]["value"] = extract(r"MIC\s+(\d+)", cast=int)
     data["meterDetails"]["maxDemand"]["value"] = extract(r"Max Demand - Period\s+(\d+)", cast=int)
     data["meterDetails"]["maxDemandDate"] = extract(r"Date\s+(\d{2}-[A-Za-z]{3}-\d{2})")
 
-    # Parse Charges
+    # Parse Charges with logic validation
     for line in lines:
         if "@ €" in line:
-            desc = line.split("@ €")[0].strip()
             amounts = re.findall(r"€([\d,.]+)", line)
             numbers = re.findall(r"(\d+[\d,.]*)\s*(kWh|kVa|kW|days)?", line)
-            if amounts:
-                quantity = numbers[0] if numbers else ("", "")
-                charge = {
-                    "description": line.strip(),
-                    "quantity": int(quantity[0].replace(",", "")) if quantity[0] else None,
-                    "unit": quantity[1] or "",
-                    "rate": float(amounts[0].replace(",", "")) if len(amounts) > 0 else None,
-                    "total": float(amounts[-1].replace(",", "")) if len(amounts) > 1 else float(amounts[0].replace(",", ""))
-                }
-                data["charges"].append(charge)
+            quantity = numbers[0] if numbers else ("", "")
 
-    # Consumption summary
-    for label in ["Day Units", "Night Units", "Low Power Factor Units"]:
-        c = next((x for x in data["charges"] if label.lower() in x["description"].lower()), None)
-        if c:
-            clean_label = label.replace(" Units", "").replace("Low Power Factor", "Wattless")
-            data["consumption"].append({
-                "type": clean_label,
-                "units": {"value": c["quantity"], "unit": c["unit"]}
-            })
+            try:
+                parsed_quantity = int(quantity[0].replace(",", "")) if quantity[0] else None
+                parsed_rate = float(amounts[0].replace(",", "")) if len(amounts) > 0 else None
+                parsed_total = float(amounts[-1].replace(",", "")) if len(amounts) > 0 else None
+
+                # Sanity check: quantity × rate ≈ total (±1%)
+                if parsed_quantity and parsed_rate and parsed_total:
+                    calc = parsed_quantity * parsed_rate
+                    if abs(calc - parsed_total) > max(1.0, 0.01 * parsed_total):
+                        parsed_total = round(calc, 2)  # override to match math
+
+                data["charges"].append({
+                    "description": line.strip(),
+                    "quantity": parsed_quantity,
+                    "unit": quantity[1] or "",
+                    "rate": parsed_rate,
+                    "total": parsed_total
+                })
+            except:
+                continue
+
+    # Consumption summary (cross check logic)
+    day = next((x for x in data["charges"] if "day units" in x["description"].lower()), {})
+    night = next((x for x in data["charges"] if "night units" in x["description"].lower()), {})
+    wattless = next((x for x in data["charges"] if "low power" in x["description"].lower()), {})
+    total_kwh = sum([v.get("quantity", 0) or 0 for v in [day, night, wattless]])
+
+    data["consumption"] = [
+        {"type": "Day", "units": {"value": day.get("quantity"), "unit": "kWh"}},
+        {"type": "Night", "units": {"value": night.get("quantity"), "unit": "kWh"}},
+        {"type": "Wattless", "units": {"value": wattless.get("quantity"), "unit": "kWh"}}
+    ]
 
     # Tax breakdown
-    for line in lines:
-        if "VAT @ 9%" in line:
-            vat_matches = re.findall(r"€([\d,.]+)", line)
-            if vat_matches:
-                data["taxDetails"]["vatAmount"] = float(vat_matches[-1].replace(",", ""))
-            break
+    vat_line = next((l for l in lines if "VAT @ 9%" in l), "")
+    vat_amounts = re.findall(r"€([\d,.]+)", vat_line)
+    if vat_amounts:
+        data["taxDetails"]["vatAmount"] = float(vat_amounts[-1].replace(",", ""))
 
-    tax_line = next((x for x in data["charges"] if "Electricity Tax" in x["description"]), {})
+    tax = next((x for x in data["charges"] if "electricity tax" in x["description"].lower()), {})
     data["taxDetails"]["electricityTax"] = {
-        "quantity": {"value": tax_line.get("quantity"), "unit": "kWh"},
-        "rate": {"value": tax_line.get("rate"), "unit": "€/kWh"},
-        "amount": tax_line.get("total")
+        "quantity": {"value": total_kwh, "unit": "kWh"},
+        "rate": {"value": tax.get("rate"), "unit": "€/kWh"},
+        "amount": tax.get("total")
     }
 
-    # Total amount
+    # Total
     total = extract(r"Total \(This period\)\s+€([\d,.]+)", cast=float)
     data["totalAmount"] = {"value": total, "unit": "€"}
 
