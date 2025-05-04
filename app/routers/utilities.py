@@ -104,10 +104,10 @@ def parse_arden(pdf_bytes: bytes) -> dict:
     try:
         day_val = int(day_kwh.get("quantity", 0))
         night_val = int(night_kwh.get("quantity", 0))
-        expected = day_val + night_val
-        actual = expected  # Placeholder for future check
-        if expected != actual:
-            data["conflicts"].append(f"Mismatch in kWh total: {expected} != {actual}")
+        actual = day_val + night_val
+        reported_total = extract(r"Total Units\s+(\d+)", cast=int, default=actual)
+        if actual != reported_total:
+            data["conflicts"].append(f"Mismatch in kWh total: {actual} != {reported_total}")
     except:
         data["conflicts"].append("Could not validate Day + Night kWh")
 
