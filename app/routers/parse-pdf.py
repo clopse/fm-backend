@@ -10,12 +10,13 @@ def get(value, default=""):
 @router.post("/utilities/parse-pdf")
 async def parse_pdf(file: UploadFile = File(...)):
     try:
-        content = await file.read()
-        raw = parse_arden(content)  # ✅ FIXED: no 'await' on parse_arden
+        content = await file.read()           # ✅ Correctly await file read
+        raw = parse_arden(content)            # ✅ Do not await parse_arden (sync function)
 
         charges_map = {
             c.get("description", "").lower(): c for c in raw.get("charges", [])
         }
+
         tax = raw.get("taxDetails", {})
         total = raw.get("totalAmount", {}).get("value", "")
 
@@ -37,7 +38,7 @@ async def parse_pdf(file: UploadFile = File(...)):
             "electricity_tax": get(tax.get("electricityTax")),
             "vat": get(tax.get("vatAmount")),
             "total_amount": get(total),
-            "full_data": raw
+            "full_data": raw  # Useful for audit/debug if you want to store full JSON
         }
 
     except Exception as e:
