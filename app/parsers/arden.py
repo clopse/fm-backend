@@ -1,10 +1,12 @@
 import pdfplumber
 import re
+import io
 
 def parse_arden(pdf_bytes: bytes) -> dict:
     data = {}
 
-    with pdfplumber.open(pdf_bytes) as pdf:
+    # ✅ Wrap bytes in a BytesIO stream
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         text = "\n".join([page.extract_text() for page in pdf.pages if page.extract_text()])
 
     def extract(pattern, group=1, default=None, cast=str):
