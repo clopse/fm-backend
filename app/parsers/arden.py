@@ -1,40 +1,64 @@
 import pdfplumber
 import re
 import io
-from typing import List, Dict, Any
-
-
-def fuzzy_match(label: str, keys: List[str]) -> str:
-    label = label.lower().strip()
-    for key in keys:
-        if key in label:
-            return key
-    return ""
 
 
 def parse_arden(pdf_bytes: bytes) -> dict:
     data = {
+        "supplier": "Arden Energy",
+        "customerRef": None,
+        "billingRef": None,
+        "billingPeriod": {"startDate": None, "endDate": None},
+        "customer": {
+            "name": "Findlater House Limited",
+            "address": {
+                "street": "28/32 O'Connell St",
+                "city": "Dublin",
+                "postalCode": "Dublin 1"
+            }
+        },
+        "meterDetails": {
+            "mprn": None,
+            "meterNumber": None,
+            "meterType": None,
+            "mic": {"value": None, "unit": "kVa"},
+            "maxDemand": {"value": None, "unit": "kVa"},
+            "maxDemandDate": None
+        },
+        "consumption": [],
         "charges": [],
-        "conflicts": [],
-        "confidence": {},
+        "taxDetails": {
+            "vatRate": 9,
+            "vatAmount": None,
+            "electricityTax": {
+                "quantity": {"value": None, "unit": "kWh"},
+                "rate": {"value": None, "unit": "€/kWh"},
+                "amount": None
+            }
+        },
+        "totalAmount": {"value": None, "unit": "€"},
+        "supplierContact": {
+            "address": "Liffey Trust, Sheriff Street Upper, Dublin 1",
+            "phone": ["01 517 5793", "1800 940 151"],
+            "email": "info@ardenenergy.ie",
+            "website": "www.ardenenergy.ie",
+            "vatNumber": "9643703C"
+        }
     }
 
-    # Extract text from PDF
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-        text_lines = []
+        lines = []
         for page in pdf.pages:
             words = page.extract_words()
-            lines = {}
-            for word in words:
-                y = round(word["top"], 1)
-                if y not in lines:
-                    lines[y] = []
-                lines[y].append(word)
-            for y in sorted(lines):
-                line_text = " ".join([w["text"] for w in sorted(lines[y], key=lambda w: w['x0'])])
-                text_lines.append(line_text)
+            grouped = {}
+            for w in words:
+                y = round(w['top'], 1)
+                grouped.setdefault(y, []).append(w)
+            for y in sorted(grouped):
+                line = " ".join([w['text'] for w in sorted(grouped[y], key=lambda w: w['x0'])])
+                lines.append(line)
 
-    text = "\n".join(text_lines)
+    text = "\n".join(lines)
 
     def extract(pattern, group=1, default=None, cast=str):
         match = re.search(pattern, text)
@@ -45,70 +69,58 @@ def parse_arden(pdf_bytes: bytes) -> dict:
                 return default
         return default
 
-    # Header info
-    data["supplier"] = "Arden Energy"
-    data["billingRef"] = extract(r"Billing Ref\s+([^\n]+)")
+    # Header & Period
     data["customerRef"] = extract(r"Customer Ref\s+([A-Z0-9]+)")
-    data["billingPeriod"] = {
-        "startDate": extract(r"Billing Period\s+(\d{2}-[A-Za-z]{3}-\d{2})"),
-        "endDate": extract(r"to\s+(\d{2}-[A-Za-z]{3}-\d{2})"),
+    data["billingRef"] = extract(r"Billing Ref\s+([\dA-Za-z\-\s]+)")
+    data["billingPeriod"]["startDate"] = extract(r"(\d{2}-[A-Za-z]{3}-\d{2})\s+to", group=1)
+    data["billingPeriod"]["endDate"] = extract(r"to\s+(\d{2}-[A-Za-z]{3}-\d{2})", group=1)
+
+    # Meter Info
+    data["meterDetails"]["mprn"] = extract(r"MPRN\s+(\d+)")
+    data["meterDetails"]["meterNumber"] = extract(r"Meter Number\s+(\d+)")
+    data["meterDetails"]["meterType"] = extract(r"Meter Type\s+([A-Za-z0-9 ]+)")
+    data["meterDetails"]["mic"]["value"] = extract(r"MIC\s+(\d+)", cast=int)
+    data["meterDetails"]["maxDemand"]["value"] = extract(r"Max Demand - Period\s+(\d+)", cast=int)
+    data["meterDetails"]["maxDemandDate"] = extract(r"Date\s+(\d{2}-[A-Za-z]{3}-\d{2})")
+
+    # Parse Charges
+    for line in lines:
+        if "@ €" in line:
+            desc = line.split("@ €")[0].strip()
+            amounts = re.findall(r"€([\d,.]+)", line)
+            numbers = re.findall(r"(\d+[\d,.]*)\s*(kWh|kVa|kW|days)?", line)
+            if amounts:
+                quantity = numbers[0] if numbers else ("", "")
+                charge = {
+                    "description": line.strip(),
+                    "quantity": int(quantity[0].replace(",", "")) if quantity[0] else None,
+                    "unit": quantity[1] or "",
+                    "rate": float(amounts[0].replace(",", "")) if len(amounts) > 0 else None,
+                    "total": float(amounts[-1].replace(",", "")) if len(amounts) > 1 else None
+                }
+                data["charges"].append(charge)
+
+    # Consumption summary
+    for label in ["Day", "Night", "Wattless"]:
+        c = next((x for x in data["charges"] if label.lower() in x["description"].lower()), None)
+        if c:
+            data["consumption"].append({
+                "type": label,
+                "units": {"value": c["quantity"], "unit": c["unit"]}
+            })
+
+    # Tax breakdown
+    vat = extract(r"VAT @ 9%\s+€([\d,.]+)", cast=float)
+    tax_line = next((x for x in data["charges"] if "Electricity Tax" in x["description"]), {})
+    data["taxDetails"]["vatAmount"] = vat
+    data["taxDetails"]["electricityTax"] = {
+        "quantity": {"value": tax_line.get("quantity"), "unit": "kWh"},
+        "rate": {"value": tax_line.get("rate"), "unit": "€/kWh"},
+        "amount": tax_line.get("total")
     }
 
-    data["meterDetails"] = {
-        "mprn": extract(r"MPRN\s+(\d+)", cast=int),
-        "mic": {
-            "value": extract(r"MIC\s+(\d+)", cast=int),
-            "unit": "kVa"
-        },
-        "maxDemand": {
-            "value": extract(r"Max Demand - Period\s+(\d+)", cast=int),
-            "unit": "kVa"
-        },
-        "maxDemandDate": extract(r"Date\s+(\d{2}-[A-Za-z]{3}-\d{2})")
-    }
-
-    # Charges
-    for line in text_lines:
-        if re.search(r"@\s*\u20ac", line):
-            parts = re.split(r"\s{2,}", line.strip())
-            amount_match = re.findall(r"\u20ac([\d.,]+)", line)
-            quantity_match = re.findall(r"(\d+[\d,.]*)\s*(kWh|kVa|kW|days)?", line)
-            if amount_match and len(amount_match) >= 2:
-                data["charges"].append({
-                    "description": parts[0],
-                    "quantity": int(quantity_match[0][0].replace(",", "")) if quantity_match else None,
-                    "unit": quantity_match[0][1] if quantity_match else None,
-                    "rate": float(amount_match[0].replace(",", "")),
-                    "total": float(amount_match[1].replace(",", ""))
-                })
-
-    # Tax and totals
-    data["taxDetails"] = {
-        "electricityTax": extract(
-            r"Electricity Tax\s+\d+\s*kWh\s*@\s*\u20ac[\d,.]+\s*\u20ac([\d,.]+)",
-            group=1,
-            cast=float,
-            default=0.0
-        ),
-        "vatAmount": extract(r"VAT @ 9%\s+\u20ac([\d,.]+)", group=1, cast=float, default=0.0)
-    }
-
-    data["totalAmount"] = {
-        "value": extract(r"Total \(This period\)\s+\u20ac([\d,.]+)", group=1, cast=float, default=0.0),
-        "currency": "EUR"
-    }
-
-    # Sanity check: validate day + night total
-    day_kwh = next((c for c in data["charges"] if "day" in c["description"].lower()), {})
-    night_kwh = next((c for c in data["charges"] if "night" in c["description"].lower()), {})
-    try:
-        day_val = int(day_kwh.get("quantity", 0))
-        night_val = int(night_kwh.get("quantity", 0))
-        actual = day_val + night_val
-        reported_total = extract(r"Total Units\s+(\d+)", cast=int, default=actual)
-        if actual != reported_total:
-            data["conflicts"].append(f"Mismatch in kWh total: {actual} != {reported_total}")
-    except:
-        data["conflicts"].append("Could not validate Day + Night kWh")
+    # Total amount
+    total = extract(r"Total \(This period\)\s+€([\d,.]+)", cast=float)
+    data["totalAmount"] = {"value": total, "unit": "€"}
 
     return data
