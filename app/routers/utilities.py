@@ -1,48 +1,48 @@
-from fastapi import APIRouter, UploadFile, File, Form
+from fastapi import APIRouter, UploadFile, File
 from fastapi.responses import JSONResponse
 from app.parsers.arden import parse_arden
-from datetime import datetime
 
 router = APIRouter()
 
-def to_iso(datestr: str) -> str:
-    """Convert '01-Jan-25' to '2025-01-01'"""
-    try:
-        return datetime.strptime(datestr, "%d-%b-%y").strftime("%Y-%m-%d")
-    except:
-        return ""
+def get_safe(d, default=""):
+    return str(d) if d is not None else default
 
 @router.post("/utilities/parse-pdf")
 async def parse_pdf(file: UploadFile = File(...)):
     try:
-        contents = await file.read()         # ✅ Read raw bytes
-        raw = parse_arden(contents)          # ✅ Pass bytes to parser
+        raw = await parse_arden(await file.read())
 
-        charges = {c["description"]: c["amount"] for c in raw.get("charges", [])}
-        consumption = {c["type"].lower(): c["units"]["value"] for c in raw.get("consumption", [])}
+        # Map charges by description for easier lookup
+        charges_map = {}
+        for item in raw.get("charges", []):
+            key = item.get("description", "").lower()
+            charges_map[key] = item
 
-        def get(d, default=""):
-            return str(d) if d is not None else default
+        # Get totals
+        tax = raw.get("taxDetails", {})
+        total = raw.get("totalAmount", {}).get("value", "")
 
         return {
-            "billing_start": to_iso(raw.get("billingPeriod", {}).get("startDate", "")),
-            "billing_end": to_iso(raw.get("billingPeriod", {}).get("endDate", "")),
-            "day_kwh": get(consumption.get("day")),
-            "night_kwh": get(consumption.get("night")),
-            "mic": get(raw.get("meterDetails", {}).get("mic", {}).get("value")),
-            "day_rate": "",
-            "night_rate": "",
-            "day_total": get(charges.get("Day Units")),
-            "night_total": get(charges.get("Night Units")),
-            "capacity_charge": get(charges.get("Capacity Charge")),
-            "pso_levy": get(charges.get("PSO Levy")),
-            "electricity_tax": get(raw.get("taxDetails", {}).get("electricityTax", {}).get("amount")),
-            "vat": get(raw.get("taxDetails", {}).get("vatAmount")),
-            "total_amount": get(raw.get("totalAmount", {}).get("value")),
+            "billing_start": raw.get("billingPeriod", {}).get("startDate", ""),
+            "billing_end": raw.get("billingPeriod", {}).get("endDate", ""),
+            "day_kwh": get_safe(charges_map.get("day units", {}).get("quantity")),
+            "night_kwh": get_safe(charges_map.get("night units", {}).get("quantity")),
+            "mic": get_safe(raw.get("meterDetails", {}).get("mic")),
+            "day_rate": get_safe(charges_map.get("day units", {}).get("rate")),
+            "night_rate": get_safe(charges_map.get("night units", {}).get("rate")),
+            "day_total": get_safe(charges_map.get("day units", {}).get("total")),
+            "night_total": get_safe(charges_map.get("night units", {}).get("total")),
+            "capacity_charge": get_safe(charges_map.get("capacity charge", {}).get("total")),
+            "pso_levy": get_safe(charges_map.get("pso levy", {}).get("total")),
+            "electricity_tax": get_safe(tax.get("electricityTax")),
+            "vat": get_safe(tax.get("vatAmount")),
+            "total_amount": get_safe(total),
+            "full_data": raw  # Optional: include full raw parse for debugging/audits
         }
 
     except Exception as e:
         return JSONResponse(status_code=500, content={"detail": f"Parse failed: {str(e)}"})
+
 
 @router.post("/utilities/parse-and-save")
 async def parse_and_save(
