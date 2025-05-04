@@ -4,8 +4,6 @@ import io
 
 def parse_arden(pdf_bytes: bytes) -> dict:
     data = {}
-
-    # ✅ Wrap bytes in a BytesIO stream
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         text = "\n".join([page.extract_text() for page in pdf.pages if page.extract_text()])
 
@@ -18,14 +16,57 @@ def parse_arden(pdf_bytes: bytes) -> dict:
                 return default
         return default
 
-    # Top-level info
     data["supplier"] = "Arden Energy"
-    data["customerRef"] = extract(r"Customer Ref\s+([A-Z0-9]+)")
     data["billingRef"] = extract(r"Billing Ref\s+([^\n]+)")
+    data["customerRef"] = extract(r"Customer Ref\s+([A-Z0-9]+)")
     data["billingPeriod"] = {
         "startDate": extract(r"Billing Period\s+(\d{2}-[A-Za-z]{3}-\d{2})"),
-        "endDate": extract(r"Billing Period\s+\d{2}-[A-Za-z]{3}-\d{2}\s+to\s+(\d{2}-[A-Za-z]{3}-\d{2})"),
+        "endDate": extract(r"to\s+(\d{2}-[A-Za-z]{3}-\d{2})")
     }
+
+    data["meterDetails"] = {
+        "mprn": extract(r"MPRN\s+(\d+)"),
+        "meterNumber": extract(r"Meter Number\s+(\S+)"),
+        "mic": extract(r"MIC\s+(\d+)", cast=int, default=0),
+        "maxDemand": extract(r"Max Demand - Period\s+(\d+)", cast=int, default=0),
+        "maxDemandDate": extract(r"Date\s+(\d{2}-[A-Za-z]{3}-\d{2})")
+    }
+
+    # Extract all line items with quantity, rate, and total
+    data["charges"] = []
+    charge_pattern = re.compile(
+        r"^(.*?)\s+(\d+(?:,\d{3})*|\d+)?\s*(kWh|kVa|kW|days|rate)?\s*@\s*€([\d.,]+)\s*€([\d.,]+)",
+        re.MULTILINE
+    )
+
+    for match in charge_pattern.finditer(text):
+        description = match.group(1).strip()
+        quantity = match.group(2)
+        unit = match.group(3) or ""
+        rate = match.group(4)
+        total = match.group(5)
+
+        data["charges"].append({
+            "description": description,
+            "quantity": int(quantity.replace(",", "")) if quantity else None,
+            "unit": unit,
+            "rate": float(rate.replace(",", "")),
+            "total": float(total.replace(",", ""))
+        })
+
+    # Manually extract tax fields
+    data["taxDetails"] = {
+        "electricityTax": extract(r"Electricity Tax\s+(\d+(?:,\d{3})*)\s*kWh\s*@\s*€[\d,.]+\s*€([\d,.]+)", group=2, cast=float, default=0.0),
+        "vatAmount": extract(r"VAT @ 9%\s+€([\d,.]+)", group=1, cast=float, default=0.0)
+    }
+
+    # Total
+    data["totalAmount"] = {
+        "value": extract(r"Total \(This period\)\s+€([\d,.]+)", group=1, cast=float, default=0.0),
+        "currency": "EUR"
+    }
+
+    # Customer info (static for now)
     data["customer"] = {
         "name": extract(r"Supply Address\s+(.+?)\s+\d{1,2}/", group=1, default=""),
         "address": {
@@ -34,72 +75,7 @@ def parse_arden(pdf_bytes: bytes) -> dict:
             "postalCode": "Dublin 1"
         }
     }
-    data["meterDetails"] = {
-        "mprn": extract(r"MPRN\s+(\d+)"),
-        "meterNumber": "3029588",
-        "meterType": extract(r"Meter\s+([A-Z0-9 ]+)"),
-        "mic": {
-            "value": extract(r"MIC\s+(\d+)", cast=int, default=0),
-            "unit": "kVa"
-        },
-        "maxDemand": {
-            "value": extract(r"Max Demand - Period\s+(\d+)", cast=int, default=0),
-            "unit": "kVa"
-        },
-        "maxDemandDate": extract(r"Date\s+(\d{2}-[A-Za-z]{3}-\d{2})")
-    }
 
-    # Consumption block
-    data["consumption"] = []
-    for type_ in ["Day", "Night", "Wattless"]:
-        units = extract(rf"{type_}.*?(\d+)\s*$", cast=int, default=0)
-        if units is not None:
-            data["consumption"].append({
-                "type": type_,
-                "units": {
-                    "value": units,
-                    "unit": "kWh"
-                }
-            })
-
-    # Charges
-    def get_charge(description):
-        return extract(rf"{re.escape(description)}.*?€([\d,]+\.\d+)", cast=float, default=0.0)
-
-    data["charges"] = [
-        {"description": "Standing Charge", "amount": get_charge("Standing Charge")},
-        {"description": "Day Units", "amount": get_charge("Day Units")},
-        {"description": "Night Units", "amount": get_charge("Night Units")},
-        {"description": "Capacity Charge", "amount": get_charge("Capacity Charge")},
-        {"description": "MIC Excess Charge", "amount": get_charge("MIC Excess Charge")},
-        {"description": "Winter Demand Charge", "amount": get_charge("Winter Demand Charge")},
-        {"description": "PSO Levy", "amount": get_charge("PSO Levy")},
-        {"description": "Electricity Tax", "amount": get_charge("Electricity Tax")},
-    ]
-
-    # VAT & Total
-    data["taxDetails"] = {
-        "vatRate": extract(r"@\s+9\.0%", group=0, default=9.0, cast=float),
-        "vatAmount": get_charge("VAT @ 9%"),
-        "electricityTax": {
-            "quantity": {
-                "value": extract(r"Electricity Tax\s+(\d+)", cast=int, default=0),
-                "unit": "kWh"
-            },
-            "rate": {
-                "value": 0.001,
-                "unit": "€/kWh"
-            },
-            "amount": get_charge("Electricity Tax")
-        }
-    }
-
-    data["totalAmount"] = {
-        "value": get_charge("Total \(This period\)"),
-        "unit": "€"
-    }
-
-    # Contact
     data["supplierContact"] = {
         "address": "Liffey Trust, Sheriff Street Upper, Dublin 1",
         "phone": ["01 517 5793", "1800 940 151"],
