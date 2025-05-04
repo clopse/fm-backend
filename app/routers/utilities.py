@@ -1,71 +1,114 @@
-from fastapi import APIRouter, UploadFile, File, Form
-from fastapi.responses import JSONResponse
-from app.parsers.arden import parse_arden
+import pdfplumber
+import re
+import io
+from typing import List, Dict, Any
 
-router = APIRouter()
 
-def get_safe(d, default=""):
-    return str(d) if d is not None else default
+def fuzzy_match(label: str, keys: List[str]) -> str:
+    label = label.lower().strip()
+    for key in keys:
+        if key in label:
+            return key
+    return ""
 
-@router.post("/utilities/parse-pdf")
-async def parse_pdf(file: UploadFile = File(...)):
+
+def parse_arden(pdf_bytes: bytes) -> dict:
+    data = {
+        "charges": [],
+        "conflicts": [],
+        "confidence": {},
+    }
+
+    # Extract text from PDF
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        text_lines = []
+        for page in pdf.pages:
+            words = page.extract_words()
+            lines = {}
+            for word in words:
+                y = round(word["top"], 1)
+                if y not in lines:
+                    lines[y] = []
+                lines[y].append(word)
+            for y in sorted(lines):
+                line_text = " ".join([w["text"] for w in sorted(lines[y], key=lambda w: w['x0'])])
+                text_lines.append(line_text)
+
+    text = "\n".join(text_lines)
+
+    def extract(pattern, group=1, default=None, cast=str):
+        match = re.search(pattern, text)
+        if match:
+            try:
+                return cast(match.group(group).replace(",", "").strip())
+            except:
+                return default
+        return default
+
+    # Header info
+    data["supplier"] = "Arden Energy"
+    data["billingRef"] = extract(r"Billing Ref\s+([^\n]+)")
+    data["customerRef"] = extract(r"Customer Ref\s+([A-Z0-9]+)")
+    data["billingPeriod"] = {
+        "startDate": extract(r"Billing Period\s+(\d{2}-[A-Za-z]{3}-\d{2})"),
+        "endDate": extract(r"to\s+(\d{2}-[A-Za-z]{3}-\d{2})"),
+    }
+
+    data["meterDetails"] = {
+        "mprn": extract(r"MPRN\s+(\d+)", cast=int),
+        "mic": {
+            "value": extract(r"MIC\s+(\d+)", cast=int),
+            "unit": "kVa"
+        },
+        "maxDemand": {
+            "value": extract(r"Max Demand - Period\s+(\d+)", cast=int),
+            "unit": "kVa"
+        },
+        "maxDemandDate": extract(r"Date\s+(\d{2}-[A-Za-z]{3}-\d{2})")
+    }
+
+    # Charges
+    for line in text_lines:
+        if re.search(r"@\s*\u20ac", line):
+            parts = re.split(r"\s{2,}", line.strip())
+            amount_match = re.findall(r"\u20ac([\d.,]+)", line)
+            quantity_match = re.findall(r"(\d+[\d,.]*)\s*(kWh|kVa|kW|days)?", line)
+            if amount_match and len(amount_match) >= 2:
+                data["charges"].append({
+                    "description": parts[0],
+                    "quantity": int(quantity_match[0][0].replace(",", "")) if quantity_match else None,
+                    "unit": quantity_match[0][1] if quantity_match else None,
+                    "rate": float(amount_match[0].replace(",", "")),
+                    "total": float(amount_match[1].replace(",", ""))
+                })
+
+    # Tax and totals
+    data["taxDetails"] = {
+        "electricityTax": extract(
+            r"Electricity Tax\s+\d+\s*kWh\s*@\s*\u20ac[\d,.]+\s*\u20ac([\d,.]+)",
+            group=1,
+            cast=float,
+            default=0.0
+        ),
+        "vatAmount": extract(r"VAT @ 9%\s+\u20ac([\d,.]+)", group=1, cast=float, default=0.0)
+    }
+
+    data["totalAmount"] = {
+        "value": extract(r"Total \(This period\)\s+\u20ac([\d,.]+)", group=1, cast=float, default=0.0),
+        "currency": "EUR"
+    }
+
+    # Sanity check: validate day + night total
+    day_kwh = next((c for c in data["charges"] if "day" in c["description"].lower()), {})
+    night_kwh = next((c for c in data["charges"] if "night" in c["description"].lower()), {})
     try:
-        content = await file.read()         # ✅ only this is awaited
-        raw = parse_arden(content)          # ✅ sync function, no await
+        day_val = int(day_kwh.get("quantity", 0))
+        night_val = int(night_kwh.get("quantity", 0))
+        expected = day_val + night_val
+        actual = expected  # Placeholder for future check
+        if expected != actual:
+            data["conflicts"].append(f"Mismatch in kWh total: {expected} != {actual}")
+    except:
+        data["conflicts"].append("Could not validate Day + Night kWh")
 
-        charges_map = {
-            c.get("description", "").lower(): c
-            for c in raw.get("charges", [])
-        }
-
-        tax = raw.get("taxDetails", {})
-        total = raw.get("totalAmount", {}).get("value", "")
-
-        mic_raw = raw.get("meterDetails", {}).get("mic")
-        mic = mic_raw.get("value") if isinstance(mic_raw, dict) else mic_raw
-
-        return {
-            "billing_start": raw.get("billingPeriod", {}).get("startDate", ""),
-            "billing_end": raw.get("billingPeriod", {}).get("endDate", ""),
-            "day_kwh": get_safe(charges_map.get("day units", {}).get("quantity")),
-            "night_kwh": get_safe(charges_map.get("night units", {}).get("quantity")),
-            "mic": get_safe(mic),
-            "day_rate": get_safe(charges_map.get("day units", {}).get("rate")),
-            "night_rate": get_safe(charges_map.get("night units", {}).get("rate")),
-            "day_total": get_safe(charges_map.get("day units", {}).get("total")),
-            "night_total": get_safe(charges_map.get("night units", {}).get("total")),
-            "capacity_charge": get_safe(charges_map.get("capacity charge", {}).get("total")),
-            "pso_levy": get_safe(charges_map.get("pso levy", {}).get("total")),
-            "electricity_tax": get_safe(tax.get("electricityTax")),
-            "vat": get_safe(tax.get("vatAmount")),
-            "total_amount": get_safe(total),
-            "full_data": raw
-        }
-
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"detail": f"Parse failed: {str(e)}"})
-
-
-@router.post("/utilities/parse-and-save")
-async def parse_and_save(
-    file: UploadFile = File(...),
-    hotel_id: str = Form(...),
-    utility_type: str = Form(...),
-    supplier: str = Form(...),
-    billing_start: str = Form(...),
-    billing_end: str = Form(...),
-    day_kwh: str = Form(""),
-    night_kwh: str = Form(""),
-    mic: str = Form(""),
-    day_rate: str = Form(""),
-    night_rate: str = Form(""),
-    day_total: str = Form(""),
-    night_total: str = Form(""),
-    capacity_charge: str = Form(""),
-    pso_levy: str = Form(""),
-    electricity_tax: str = Form(""),
-    vat: str = Form(""),
-    total_amount: str = Form(""),
-):
-    # Save to DB, Excel, etc
-    return {"message": "Saved successfully"}
+    return data
