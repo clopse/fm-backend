@@ -72,8 +72,8 @@ def parse_arden(pdf_bytes: bytes) -> dict:
     # Header & Period
     data["customerRef"] = extract(r"Customer Ref\s+([A-Z0-9]+)")
     data["billingRef"] = extract(r"Billing Ref\s+([\dA-Za-z\-\s]+)")
-    data["billingPeriod"]["startDate"] = extract(r"(\d{2}-[A-Za-z]{3}-\d{2})\s+to", group=1)
-    data["billingPeriod"]["endDate"] = extract(r"to\s+(\d{2}-[A-Za-z]{3}-\d{2})", group=1)
+    data["billingPeriod"]["startDate"] = extract(r"(\d{2}-[A-Za-z]{3}-\d{2})\s+to")
+    data["billingPeriod"]["endDate"] = extract(r"to\s+(\d{2}-[A-Za-z]{3}-\d{2})")
 
     # Meter Info
     data["meterDetails"]["mprn"] = extract(r"MPRN\s+(\d+)")
@@ -96,23 +96,29 @@ def parse_arden(pdf_bytes: bytes) -> dict:
                     "quantity": int(quantity[0].replace(",", "")) if quantity[0] else None,
                     "unit": quantity[1] or "",
                     "rate": float(amounts[0].replace(",", "")) if len(amounts) > 0 else None,
-                    "total": float(amounts[-1].replace(",", "")) if len(amounts) > 1 else None
+                    "total": float(amounts[-1].replace(",", "")) if len(amounts) > 1 else float(amounts[0].replace(",", ""))
                 }
                 data["charges"].append(charge)
 
     # Consumption summary
-    for label in ["Day", "Night", "Wattless"]:
+    for label in ["Day Units", "Night Units", "Low Power Factor Units"]:
         c = next((x for x in data["charges"] if label.lower() in x["description"].lower()), None)
         if c:
+            clean_label = label.replace(" Units", "").replace("Low Power Factor", "Wattless")
             data["consumption"].append({
-                "type": label,
+                "type": clean_label,
                 "units": {"value": c["quantity"], "unit": c["unit"]}
             })
 
     # Tax breakdown
-    vat = extract(r"VAT @ 9%\s+€([\d,.]+)", cast=float)
+    for line in lines:
+        if "VAT @ 9%" in line:
+            vat_matches = re.findall(r"€([\d,.]+)", line)
+            if vat_matches:
+                data["taxDetails"]["vatAmount"] = float(vat_matches[-1].replace(",", ""))
+            break
+
     tax_line = next((x for x in data["charges"] if "Electricity Tax" in x["description"]), {})
-    data["taxDetails"]["vatAmount"] = vat
     data["taxDetails"]["electricityTax"] = {
         "quantity": {"value": tax_line.get("quantity"), "unit": "kWh"},
         "rate": {"value": tax_line.get("rate"), "unit": "€/kWh"},
