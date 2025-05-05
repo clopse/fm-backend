@@ -30,7 +30,7 @@ def process_and_store_docupanda(db, content, hotel_id, utility_type, supplier, f
     try:
         encoded = base64.b64encode(content).decode()
 
-        # Upload document
+        # Upload document to DocuPanda
         upload_res = requests.post(
             "https://app.docupanda.io/document",
             json={"document": {"file": {"contents": encoded, "filename": filename}}},
@@ -40,11 +40,17 @@ def process_and_store_docupanda(db, content, hotel_id, utility_type, supplier, f
                 "X-API-Key": DOCUPANDA_API_KEY,
             },
         )
+        # Log the response
+        print(f"DocuPanda Upload Response: {upload_res.status_code} - {upload_res.text}")
+
+        # Parse the response data
         data = upload_res.json()
         document_id = data.get("documentId")
         job_id = data.get("jobId")
+
+        # Error handling if no documentId or jobId is returned
         if not document_id or not job_id:
-            print("❌ No documentId or jobId returned")
+            print(f"❌ Error: No documentId or jobId returned: {upload_res.text}")
             return
 
         # Poll for job completion (use 30s delay before first check)
