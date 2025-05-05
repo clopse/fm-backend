@@ -1,16 +1,15 @@
-# app/db/models.py
 from datetime import datetime
+from sqlalchemy import Column, Integer, String, Text, DateTime
+from sqlalchemy.ext.declarative import declarative_base
 
-db = []  # simulate DB for now with a list, replace with real DB logic later
+Base = declarative_base()
 
-def save_parsed_data_to_db(hotel_id: str, utility_type: str, parsed_data: dict, s3_path: str):
-    record = {
-        "hotel_id": hotel_id,
-        "utility_type": utility_type,
-        "s3_path": s3_path,
-        "parsed_at": datetime.utcnow().isoformat(),
-        "fields": parsed_data  # store entire JSON for now
-    }
-    db.append(record)  # log to memory for now
-    # Later: write to PostgreSQL / Supabase / DynamoDB
-    return record
+class ParsedUtilityBill(Base):
+    __tablename__ = "parsed_utility_bills"
+
+    id = Column(Integer, primary_key=True, index=True)
+    hotel_id = Column(String, index=True)
+    utility_type = Column(String, index=True)
+    s3_path = Column(String)
+    parsed_at = Column(DateTime, default=datetime.utcnow)
+    raw_json = Column(Text)
