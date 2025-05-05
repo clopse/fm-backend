@@ -1,89 +1,83 @@
+from fastapi import APIRouter, UploadFile, File
+from fastapi.responses import JSONResponse
 import base64
 import requests
+import os
 import time
-from fastapi import APIRouter, UploadFile, File, Form
-from fastapi.responses import JSONResponse
-
-DOCUPANDA_API_KEY = "YOUR_API_KEY"  # Replace with your actual DocuPanda API key
-DOCUPANDA_BASE = "https://app.docupanda.io"
-SCHEMA_ID = "YOUR_SCHEMA_ID"  # Replace with your DocuPanda schema ID
 
 router = APIRouter()
 
-@router.post("/utilities/parse-and-save-docupanda")
-async def parse_and_save_docupanda(
-    file: UploadFile = File(...),
-    hotel_id: str = Form(...)
-):
+DOCUPANDA_API_KEY = os.getenv("DOCUPANDA_API_KEY")
+SCHEMA_ELECTRICITY = "3ca991a9"
+SCHEMA_GAS = "bd3ec499"
+
+# Detect bill type from pages text
+def detect_bill_type(pages_text: list[str]) -> str:
+    joined = " ".join(pages_text).lower()
+    if "mprn" in joined or "mic" in joined or "day units" in joined:
+        return "electricity"
+    elif "gprn" in joined or "therms" in joined or "gas usage" in joined:
+        return "gas"
+    return "electricity"  # default fallback
+
+@router.post("/utilities/parse-pdf")
+async def parse_pdf(file: UploadFile = File(...)):
     try:
-        # 1. Read and encode file
         content = await file.read()
         encoded = base64.b64encode(content).decode()
 
-        # 2. Upload to DocuPanda
+        # Step 1: Upload document
         upload_res = requests.post(
-            f"{DOCUPANDA_BASE}/document",
+            "https://app.docupanda.io/document",
+            json={"document": {"file": {"contents": encoded, "filename": file.filename}}},
             headers={
                 "accept": "application/json",
                 "content-type": "application/json",
-                "X-API-Key": DOCUPANDA_API_KEY
+                "X-API-Key": DOCUPANDA_API_KEY,
             },
-            json={"document": {"file": {"contents": encoded, "filename": file.filename}}}
         )
+        document_id = upload_res.json().get("documentId")
+        if not document_id:
+            raise Exception("No documentId returned from DocuPanda upload.")
 
-        if upload_res.status_code != 200:
-            return JSONResponse(status_code=500, content={"detail": "DocuPanda upload failed."})
+        # Step 2: Get plain text
+        doc_res = requests.get(
+            f"https://app.docupanda.io/document/{document_id}",
+            headers={"accept": "application/json", "X-API-Key": DOCUPANDA_API_KEY},
+        ).json()
+        pages_text = doc_res.get("result", {}).get("pagesText", [])
+        bill_type = detect_bill_type(pages_text)
+        schema_id = SCHEMA_ELECTRICITY if bill_type == "electricity" else SCHEMA_GAS
 
-        doc_id = upload_res.json().get("documentId")
-        if not doc_id:
-            return JSONResponse(status_code=500, content={"detail": "No document ID returned from DocuPanda."})
-
-        # 3. Wait for document to be ready
-        for _ in range(10):  # wait up to 30 seconds
-            doc_res = requests.get(
-                f"{DOCUPANDA_BASE}/document/{doc_id}",
-                headers={"accept": "application/json", "X-API-Key": DOCUPANDA_API_KEY}
-            )
-            status = doc_res.json().get("status")
-            if status == "completed":
-                break
-            time.sleep(3)
-        else:
-            return JSONResponse(status_code=500, content={"detail": "DocuPanda processing timeout."})
-
-        # 4. Trigger standardization
-        standardize_res = requests.post(
-            f"{DOCUPANDA_BASE}/standardize/batch",
+        # Step 3: Request standardization
+        std_res = requests.post(
+            "https://app.docupanda.io/standardize/batch",
+            json={"documentIds": [document_id], "schemaId": schema_id},
             headers={
                 "accept": "application/json",
                 "content-type": "application/json",
-                "X-API-Key": DOCUPANDA_API_KEY
+                "X-API-Key": DOCUPANDA_API_KEY,
             },
-            json={"documentIds": [doc_id], "schemaId": SCHEMA_ID}
         )
-
-        std_id = standardize_res.json().get("standardizationId")
+        std_id = std_res.json().get("standardizationId")
         if not std_id:
-            return JSONResponse(status_code=500, content={"detail": "Failed to initiate standardization."})
+            raise Exception("No standardizationId returned.")
 
-        # 5. Wait for standardization result
-        for _ in range(10):
-            std_res = requests.get(
-                f"{DOCUPANDA_BASE}/standardize/{std_id}",
-                headers={"accept": "application/json", "X-API-Key": DOCUPANDA_API_KEY}
-            )
-            std_data = std_res.json()
-            if std_data.get("status") == "completed" and std_data.get("result"):
-                break
-            time.sleep(3)
-        else:
-            return JSONResponse(status_code=500, content={"detail": "DocuPanda standardization timeout."})
+        # Step 4: Poll for result
+        for _ in range(6):
+            time.sleep(5)
+            result = requests.get(
+                f"https://app.docupanda.io/standardize/{std_id}",
+                headers={"accept": "application/json", "X-API-Key": DOCUPANDA_API_KEY},
+            ).json()
 
-        # 6. Return structured fields
-        return {
-            "hotel_id": hotel_id,
-            "parsed": std_data["result"]
-        }
+            if result.get("status") == "completed":
+                return result.get("result", {})
+
+        raise Exception("Standardization timed out or failed.")
 
     except Exception as e:
-        return JSONResponse(status_code=500, content={"detail": f"Parse failed: {str(e)}"})
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"DocuPanda parse failed: {str(e)}"},
+        )
