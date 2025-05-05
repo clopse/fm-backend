@@ -1,10 +1,9 @@
-from fastapi import APIRouter, UploadFile, File, Form, Depends, BackgroundTasks, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
 from sqlalchemy.orm import Session
 from datetime import datetime
 import base64
 import requests
 import os
-import time
 
 from app.db.session import get_db
 from app.db.crud import save_parsed_data_to_db
@@ -12,12 +11,10 @@ from app.utils.s3 import save_json_to_s3
 
 router = APIRouter()
 
-# ✅ Correct, current schema IDs from DocuPanda
 SCHEMA_ELECTRICITY = "3ca991a9"
 SCHEMA_GAS = "33093b4d"
 DOCUPANDA_API_KEY = os.getenv("DOCUPANDA_API_KEY")
 
-# Optional helper to detect bill type (only for precheck)
 def detect_bill_type(pages_text: list[str]) -> str:
     joined = " ".join(pages_text).lower()
     if "mprn" in joined or "mic" in joined or "day units" in joined:
@@ -62,59 +59,48 @@ async def precheck_bill_type(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-def process_and_store_docupanda(db, content, hotel_id, utility_type, supplier, filename):
+
+@router.post("/utilities/parse-and-save")
+async def parse_and_return_ids(
+    hotel_id: str = Form(...),
+    utility_type: str = Form(...),
+    supplier: str = Form(...),
+    file: UploadFile = File(...),
+):
     try:
+        content = await file.read()
         encoded = base64.b64encode(content).decode()
 
-        # Step 1: Upload document
+        # Step 1: Upload document to DocuPanda
         upload_res = requests.post(
             "https://app.docupanda.io/document",
-            json={"document": {"file": {"contents": encoded, "filename": filename}}},
+            json={"document": {"file": {"contents": encoded, "filename": file.filename}}},
             headers={
                 "accept": "application/json",
                 "content-type": "application/json",
                 "X-API-Key": DOCUPANDA_API_KEY,
             },
         )
-        print(f"📤 DocuPanda Upload: {upload_res.status_code}")
+        if upload_res.status_code != 200:
+            raise HTTPException(status_code=400, detail="Upload to DocuPanda failed")
+
         doc_data = upload_res.json()
         document_id = doc_data.get("documentId")
-        job_id = doc_data.get("jobId")
+        upload_job_id = doc_data.get("jobId")
 
-        if not document_id or not job_id:
-            print(f"❌ No documentId or jobId returned: {upload_res.text}")
-            return
+        if not document_id or not upload_job_id:
+            raise HTTPException(status_code=400, detail="Missing documentId or jobId")
 
-        # Step 2: Poll for parsing
-        for attempt in range(5):
-            time.sleep(min(2 ** attempt, 60))
-            job_status = requests.get(
-                f"https://app.docupanda.io/job/{job_id}",
-                headers={"accept": "application/json", "X-API-Key": DOCUPANDA_API_KEY},
-            ).json()
-            status = job_status.get("status")
-            print(f"⌛ Parsing status ({attempt+1}): {status}")
-
-            if status == "completed":
-                break
-            elif status == "error":
-                print(f"❌ Parsing failed: {job_status}")
-                return
-        else:
-            print("❌ Parsing timeout")
-            return
-
-        # Step 3: Get schema based on confirmed type
+        # Step 2: Choose schema based on passed type
         bill_type = utility_type.lower()
         if bill_type == "electricity":
             schema_id = SCHEMA_ELECTRICITY
         elif bill_type == "gas":
             schema_id = SCHEMA_GAS
         else:
-            print(f"❌ Invalid utility type passed: {utility_type}")
-            return
+            raise HTTPException(status_code=400, detail="Unknown utility type")
 
-        # Step 4: Standardize
+        # Step 3: Request standardization
         std_res = requests.post(
             "https://app.docupanda.io/standardize/batch",
             json={"documentIds": [document_id], "schemaId": schema_id},
@@ -124,48 +110,57 @@ def process_and_store_docupanda(db, content, hotel_id, utility_type, supplier, f
                 "X-API-Key": DOCUPANDA_API_KEY,
             },
         )
-        print(f"📥 Standardize: {std_res.status_code}")
-        std_id = std_res.json().get("standardizationId")
-        if not std_id:
-            print("❌ No standardizationId returned")
-            return
+        if std_res.status_code != 200:
+            raise HTTPException(status_code=400, detail="Standardization request failed")
 
-        # Step 5: Poll for standardization
-        for attempt in range(5):
-            time.sleep(min(2 ** attempt, 60))
-            std_status = requests.get(
-                f"https://app.docupanda.io/standardize/{std_id}",
-                headers={"accept": "application/json", "X-API-Key": DOCUPANDA_API_KEY},
-            ).json()
+        std_data = std_res.json()
+        standardization_id = std_data.get("standardizationId")
+        std_job_id = std_data.get("jobId")
 
-            if std_status.get("status") == "completed":
-                parsed = std_status.get("result", {})
-                billing_start = parsed.get("billingPeriod", {}).get("startDate") or datetime.utcnow().strftime("%Y-%m-%d")
-                s3_path = save_json_to_s3(parsed, hotel_id, bill_type, billing_start, filename)
-                save_parsed_data_to_db(db, hotel_id, bill_type, parsed, s3_path)
-                print(f"✅ Bill parsed and saved: {s3_path}")
-                return
-            elif std_status.get("status") == "error":
-                print(f"❌ Standardization failed for {filename}")
-                return
+        if not standardization_id or not std_job_id:
+            raise HTTPException(status_code=400, detail="Missing standardizationId or jobId")
 
-        print("❌ Standardization polling timed out")
+        return {
+            "status": "processing",
+            "document_id": document_id,
+            "upload_job_id": upload_job_id,
+            "standardization_id": standardization_id,
+            "standardization_job_id": std_job_id,
+            "filename": file.filename,
+            "bill_type": bill_type,
+        }
 
     except Exception as e:
-        print(f"❌ Exception during processing: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"DocuPanda parse error: {str(e)}")
 
-@router.post("/utilities/parse-and-save")
-async def parse_and_save(
-    background_tasks: BackgroundTasks,
+
+@router.post("/utilities/finalize")
+async def finalize_parsed_bill(
+    document_id: str = Form(...),
+    standardization_id: str = Form(...),
     hotel_id: str = Form(...),
-    utility_type: str = Form(...),
-    supplier: str = Form(...),
-    file: UploadFile = File(...),
+    bill_type: str = Form(...),
+    filename: str = Form(...),
     db: Session = Depends(get_db)
 ):
-    content = await file.read()
-    background_tasks.add_task(
-        process_and_store_docupanda,
-        db, content, hotel_id, utility_type, supplier, file.filename
-    )
-    return {"status": "processing", "message": "Upload received. Processing in background."}
+    try:
+        # Step 1: Get standardized result
+        std_status = requests.get(
+            f"https://app.docupanda.io/standardize/{standardization_id}",
+            headers={"accept": "application/json", "X-API-Key": DOCUPANDA_API_KEY},
+        ).json()
+
+        if std_status.get("status") != "completed":
+            raise HTTPException(status_code=400, detail="Standardization not yet complete")
+
+        parsed = std_status.get("result", {})
+        billing_start = parsed.get("billingPeriod", {}).get("startDate") or datetime.utcnow().strftime("%Y-%m-%d")
+
+        # Step 2: Save to S3 + DB
+        s3_path = save_json_to_s3(parsed, hotel_id, bill_type, billing_start, filename)
+        save_parsed_data_to_db(db, hotel_id, bill_type, parsed, s3_path)
+
+        return {"status": "saved", "path": s3_path}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Finalize error: {str(e)}")
