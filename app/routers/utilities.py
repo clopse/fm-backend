@@ -1,86 +1,144 @@
-import os
-import uuid
-import json
-import shutil
-from fastapi import APIRouter, UploadFile, File, Form, BackgroundTasks, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, Depends, BackgroundTasks
 from fastapi.responses import JSONResponse
-from typing import Optional
+import base64
+import requests
+import os
+import time
+from datetime import datetime
+from sqlalchemy.orm import Session
 
-from app.parsers.arden import parse_arden  # or your docupanda-compatible parser
+from app.db.session import get_db
+from app.db.crud import save_parsed_data_to_db
+from app.utils.s3 import save_json_to_s3
 
 router = APIRouter()
 
-STORAGE_ROOT = "storage"
+DOCUPANDA_API_KEY = os.getenv("DOCUPANDA_API_KEY")
+SCHEMA_ELECTRICITY = "3ca991a9"
+SCHEMA_GAS = "bd3ec499"
 
-def save_job_status(job_id: str, status: str, data: Optional[dict] = None):
-    job_folder = os.path.join(STORAGE_ROOT, "jobs", job_id)
-    os.makedirs(job_folder, exist_ok=True)
-    status_path = os.path.join(job_folder, "status.json")
+# Detect bill type from pages text
+def detect_bill_type(pages_text: list[str]) -> str:
+    joined = " ".join(pages_text).lower()
+    if "mprn" in joined or "mic" in joined or "day units" in joined:
+        return "electricity"
+    elif "gprn" in joined or "therms" in joined or "gas usage" in joined:
+        return "gas"
+    return "electricity"  # default fallback
 
-    with open(status_path, "w") as f:
-        json.dump({
-            "status": status,
-            "data": data
-        }, f)
-
-@router.post("/utilities/parse-and-save")
-async def parse_and_save_utility(
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
-    hotel_id: str = Form(...),
-    supplier: str = Form(...),
-    utility_type: str = Form(...)
-):
-    # Generate job ID and create job folder
-    job_id = str(uuid.uuid4())
-    job_folder = os.path.join(STORAGE_ROOT, "jobs", job_id)
-    os.makedirs(job_folder, exist_ok=True)
-
-    # Save uploaded file
-    file_path = os.path.join(job_folder, file.filename)
-    with open(file_path, "wb") as f_out:
-        shutil.copyfileobj(file.file, f_out)
-
-    # Mark job as processing
-    save_job_status(job_id, "processing")
-
-    # Start background task
-    background_tasks.add_task(process_file, job_id, file_path, hotel_id, supplier, utility_type)
-
-    return JSONResponse(content={"jobId": job_id}, status_code=200)
-
-def process_file(job_id: str, file_path: str, hotel_id: str, supplier: str, utility_type: str):
+def process_and_store_docupanda(db, content, hotel_id, utility_type, supplier, filename):
     try:
-        # Simulate parsing logic (replace with real parser)
-        if supplier.lower() == "docupanda":
-            parsed_data = parse_arden(file_path)  # your custom parser
+        encoded = base64.b64encode(content).decode()
+
+        # Step 1: Upload document to DocuPanda
+        upload_res = requests.post(
+            "https://app.docupanda.io/document",
+            json={"document": {"file": {"contents": encoded, "filename": filename}}},
+            headers={
+                "accept": "application/json",
+                "content-type": "application/json",
+                "X-API-Key": DOCUPANDA_API_KEY,
+            },
+        )
+
+        # Log the response
+        print(f"DocuPanda Upload Response: {upload_res.status_code} - {upload_res.text}")
+
+        # Parse the response data
+        data = upload_res.json()
+        document_id = data.get("documentId")
+        job_id = data.get("jobId")
+
+        if not document_id or not job_id:
+            print(f"❌ Error: No documentId or jobId returned: {upload_res.text}")
+            return
+
+        # Step 2: Poll the job status
+        max_attempts = 5
+        for attempt in range(max_attempts):
+            time.sleep(min(2 ** attempt, 60))  # Exponential backoff (10s, 20s, 40s...)
+            job_status_res = requests.get(
+                f"https://app.docupanda.io/job/{job_id}",
+                headers={"accept": "application/json", "X-API-Key": DOCUPANDA_API_KEY},
+            ).json()
+
+            status = job_status_res.get("status")
+            print(f"Polling attempt {attempt+1}: Status - {status}")
+
+            if status == "completed":
+                break  # Exit the loop when the job is complete
+            elif status == "error":
+                print(f"❌ Job processing failed for {filename}.")
+                return
         else:
-            parsed_data = {"error": "Unknown supplier"}  # fallback
+            print("❌ Job polling timed out.")
+            return
 
-        # Save completed status
-        save_job_status(job_id, "completed", parsed_data)
+        # Step 3: Fetch the parsed document result
+        doc_res = requests.get(
+            f"https://app.docupanda.io/document/{document_id}",
+            headers={"accept": "application/json", "X-API-Key": DOCUPANDA_API_KEY},
+        ).json()
 
-        # Optional: Save parsed data to hotel folder (e.g., for dashboard)
-        # For example:
-        # hotel_folder = os.path.join(STORAGE_ROOT, hotel_id, "2025", utility_type)
-        # os.makedirs(hotel_folder, exist_ok=True)
-        # with open(os.path.join(hotel_folder, f"{job_id}.json"), "w") as f:
-        #     json.dump(parsed_data, f)
+        pages_text = doc_res.get("result", {}).get("pagesText", [])
+        bill_type = detect_bill_type(pages_text)
+        schema_id = SCHEMA_ELECTRICITY if bill_type == "electricity" else SCHEMA_GAS
+
+        # Step 4: Standardize document
+        std_res = requests.post(
+            "https://app.docupanda.io/standardize/batch",
+            json={"documentIds": [document_id], "schemaId": schema_id},
+            headers={
+                "accept": "application/json",
+                "content-type": "application/json",
+                "X-API-Key": DOCUPANDA_API_KEY,
+            },
+        )
+
+        std_id = std_res.json().get("standardizationId")
+        if not std_id:
+            print(f"❌ No standardizationId returned for {filename}")
+            return
+
+        # Step 5: Poll for standardization status
+        for attempt in range(max_attempts):
+            time.sleep(min(2 ** attempt, 60))
+            result = requests.get(
+                f"https://app.docupanda.io/standardize/{std_id}",
+                headers={"accept": "application/json", "X-API-Key": DOCUPANDA_API_KEY},
+            ).json()
+
+            if result.get("status") == "completed":
+                parsed = result.get("result", {})
+                billing_start = parsed.get("billingPeriod", {}).get("startDate") or datetime.utcnow().strftime("%Y-%m-%d")
+                s3_path = save_json_to_s3(parsed, hotel_id, utility_type, billing_start, filename)
+                save_parsed_data_to_db(db, hotel_id, utility_type, parsed, s3_path)
+                print(f"✅ Parsed and saved: {s3_path}")
+                return
+            elif result.get("status") == "error":
+                print(f"❌ Standardization failed for {filename}")
+                return
+
+        print("❌ Standardization polling timed out")
 
     except Exception as e:
-        save_job_status(job_id, "error", {"error": str(e)})
+        print(f"❌ Error processing document: {str(e)}")
 
-@router.get("/utilities/status/{job_id}")
-async def check_parsing_status(job_id: str):
-    status_path = os.path.join(STORAGE_ROOT, "jobs", job_id, "status.json")
+@router.post("/utilities/parse-and-save")
+async def parse_and_save(
+    background_tasks: BackgroundTasks,
+    hotel_id: str = Form(...),
+    utility_type: str = Form(...),
+    supplier: str = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    content = await file.read()
+    filename = file.filename
 
-    if not os.path.exists(status_path):
-        raise HTTPException(status_code=404, detail="Job not found or still processing")
+    background_tasks.add_task(
+        process_and_store_docupanda,
+        db, content, hotel_id, utility_type, supplier, filename
+    )
 
-    with open(status_path, "r") as f:
-        status_data = json.load(f)
-
-    return {
-        "status": status_data.get("status", "processing"),
-        "data": status_data.get("data", None)
-    }
+    return {"status": "processing", "message": "Upload received. Processing in background."}
