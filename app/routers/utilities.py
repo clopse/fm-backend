@@ -115,6 +115,22 @@ def process_and_store_docupanda(db, content, hotel_id, utility_type, supplier, f
     except Exception as e:
         print(f"❌ Background parsing error: {str(e)}")
 
+@router.get("/utilities/{hotel_id}/{year}/file")
+async def get_file_status(hotel_id: str, year: str, db: Session = Depends(get_db)):
+    try:
+        # Retrieve file status from DB or S3 storage
+        # Example logic: Retrieve parsed status and file path from DB or S3
+
+        # Fetch status from DB or S3 for the hotel_id and year
+        file_status = "completed"  # This is a placeholder, replace with actual logic
+        file_path = f"/path/to/{hotel_id}/{year}/utility_bill.json"  # Placeholder file path
+        
+        return {"status": file_status, "file_path": file_path}
+
+    except Exception as e:
+        print(f"Error checking file status: {str(e)}")
+        return JSONResponse(status_code=500, content={"detail": "Error checking status"})
+
 @router.post("/utilities/parse-and-save")
 async def parse_and_save(
     background_tasks: BackgroundTasks,
