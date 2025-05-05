@@ -1,6 +1,7 @@
 import boto3
 import os
 import json
+from datetime import datetime
 
 s3 = boto3.client(
     "s3",
@@ -11,9 +12,15 @@ s3 = boto3.client(
 
 BUCKET = os.getenv("AWS_BUCKET_NAME")
 
-def save_json_to_s3(data: dict, s3_path: str):
+def save_json_to_s3(data: dict, hotel_id: str, utility_type: str, billing_start: str, original_filename: str) -> str:
     try:
+        year = billing_start.split("-")[0]
+        sanitized_filename = original_filename.replace(" ", "_").replace(".pdf", ".json")
+        s3_path = f"{hotel_id}/utilities/{year}/{sanitized_filename}"
+
         json_data = json.dumps(data)
-        s3.put_object(Bucket=BUCKET, Key=s3_path.replace(".pdf", ".json"), Body=json_data)
+        s3.put_object(Bucket=BUCKET, Key=s3_path, Body=json_data)
+
+        return s3_path
     except Exception as e:
         raise RuntimeError(f"Failed to save JSON to S3: {str(e)}")
