@@ -1,9 +1,10 @@
-from fastapi import APIRouter, UploadFile, File
+from fastapi import APIRouter, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 import base64
 import requests
 import os
 import time
+from datetime import datetime
 
 router = APIRouter()
 
@@ -20,8 +21,13 @@ def detect_bill_type(pages_text: list[str]) -> str:
         return "gas"
     return "electricity"  # default fallback
 
-@router.post("/utilities/parse-pdf")
-async def parse_pdf(file: UploadFile = File(...)):
+@router.post("/utilities/parse-and-save")
+async def parse_and_save(
+    hotel_id: str = Form(...),
+    utility_type: str = Form(...),
+    supplier: str = Form(...),
+    file: UploadFile = File(...),
+):
     try:
         content = await file.read()
         encoded = base64.b64encode(content).decode()
@@ -72,7 +78,10 @@ async def parse_pdf(file: UploadFile = File(...)):
             ).json()
 
             if result.get("status") == "completed":
-                return result.get("result", {})
+                parsed = result.get("result", {})
+
+                # OPTIONAL: Save to DB, S3, or local filesystem here using `parsed` and `hotel_id`
+                return {"status": "success", "data": parsed}
 
         raise Exception("Standardization timed out or failed.")
 
