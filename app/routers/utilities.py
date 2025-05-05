@@ -47,10 +47,11 @@ def process_and_store_docupanda(db, content, hotel_id, utility_type, supplier, f
             print("❌ No documentId or jobId returned")
             return
 
-        # Poll for job completion
-        max_attempts = 10
+        # Poll for job completion (use 30s delay before first check)
+        max_attempts = 20
+        time.sleep(30)  # Initial wait before first check
         for attempt in range(max_attempts):
-            time.sleep(min(2 ** attempt, 60))  # Exponential backoff up to 60s
+            time.sleep(min(2 ** attempt, 60))
             job_status = requests.get(
                 f"https://app.docupanda.io/job/{job_id}",
                 headers={"accept": "application/json", "X-API-Key": DOCUPANDA_API_KEY},
@@ -63,6 +64,9 @@ def process_and_store_docupanda(db, content, hotel_id, utility_type, supplier, f
         else:
             print("❌ Job polling timeout")
             return
+
+        # Wait before standardize step
+        time.sleep(5)
 
         # Get document plain text
         doc_res = requests.get(
