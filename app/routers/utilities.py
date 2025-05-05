@@ -1,186 +1,179 @@
-'use client';
+from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
+from sqlalchemy.orm import Session
+from datetime import datetime
+import base64
+import requests
+import os
 
-import { useState } from "react";
-import styles from "@/styles/AddUtilityModal.module.css";
+from app.db.session import get_db
+from app.db.crud import save_parsed_data_to_db
+from app.utils.s3 import save_json_to_s3
 
-interface Props {
-  hotelId: string;
-  onClose: () => void;
-  onSave?: () => void;
-}
+router = APIRouter()
 
-export default function AddUtilityModal({ hotelId, onClose, onSave }: Props) {
-  const [file, setFile] = useState<File | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const [status, setStatus] = useState("");
-  const [detectedType, setDetectedType] = useState<string | null>(null);
-  const [manualType, setManualType] = useState<string>("");
+SCHEMA_ELECTRICITY = "3ca991a9"
+SCHEMA_GAS = "33093b4d"
+DOCUPANDA_API_KEY = os.getenv("DOCUPANDA_API_KEY")
 
-  const pollJobStatus = async (jobId: string, label: string) => {
-    for (let attempt = 0; attempt < 20; attempt++) {
-      const res = await fetch(`https://app.docupanda.io/job/${jobId}`, {
-        headers: {
-          "accept": "application/json",
-          "X-API-Key": process.env.NEXT_PUBLIC_DOCUPANDA_API_KEY || "", // set in .env
-        },
-      });
+def detect_bill_type(pages_text: list[str]) -> str:
+    joined = " ".join(pages_text).lower()
+    if "mprn" in joined or "mic" in joined or "day units" in joined:
+        return "electricity"
+    elif "gprn" in joined or "therms" in joined or "gas usage" in joined:
+        return "gas"
+    return "unknown"
 
-      if (!res.ok) throw new Error(`${label} job failed to fetch`);
+@router.post("/utilities/precheck")
+async def precheck_bill_type(file: UploadFile = File(...)):
+    try:
+        content = await file.read()
+        encoded = base64.b64encode(content).decode()
 
-      const data = await res.json();
-      if (data.status === "completed") return true;
-      if (data.status === "error") throw new Error(`${label} job failed`);
-      await new Promise((r) => setTimeout(r, 3000));
-    }
-    throw new Error(`${label} job timed out`);
-  };
+        upload_res = requests.post(
+            "https://app.docupanda.io/document",
+            json={"document": {"file": {"contents": encoded, "filename": file.filename}}},
+            headers={
+                "accept": "application/json",
+                "content-type": "application/json",
+                "X-API-Key": DOCUPANDA_API_KEY,
+            },
+        )
 
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selected = e.target.files?.[0] || null;
-    setFile(selected);
-    setStatus("");
-    setDetectedType(null);
-    setManualType("");
+        if upload_res.status_code != 200:
+            raise HTTPException(status_code=400, detail="Failed to upload to DocuPanda")
 
-    if (!selected) return;
+        document_id = upload_res.json().get("documentId")
+        if not document_id:
+            raise HTTPException(status_code=400, detail="No documentId returned")
 
-    const formData = new FormData();
-    formData.append("file", selected);
+        doc_res = requests.get(
+            f"https://app.docupanda.io/document/{document_id}",
+            headers={"accept": "application/json", "X-API-Key": DOCUPANDA_API_KEY},
+        ).json()
 
-    setStatus("⏳ Checking file type...");
+        pages_text = doc_res.get("result", {}).get("pagesText", [])
+        bill_type = detect_bill_type(pages_text)
 
-    try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/utilities/precheck`, {
-        method: "POST",
-        body: formData,
-      });
+        return {"bill_type": bill_type, "filename": file.filename}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-      if (!res.ok) throw new Error("Precheck failed");
 
-      const data = await res.json();
-      if (data.bill_type === "electricity" || data.bill_type === "gas") {
-        setDetectedType(data.bill_type);
-        setStatus(`✅ Detected: ${data.bill_type} bill`);
-      } else {
-        setDetectedType("unknown");
-        setStatus("⚠️ Unknown bill type — please select manually.");
-      }
-    } catch (err: any) {
-      console.error(err);
-      setStatus("❌ Failed to check bill type");
-      setDetectedType("unknown");
-    }
-  };
+@router.post("/utilities/parse-and-save")
+async def parse_and_save(
+    hotel_id: str = Form(...),
+    utility_type: str = Form(...),
+    supplier: str = Form(...),
+    file: UploadFile = File(...)
+):
+    try:
+        content = await file.read()
+        encoded = base64.b64encode(content).decode()
 
-  const handleSubmit = async () => {
-    if (!file) {
-      alert("Please select a file.");
-      return;
-    }
+        upload_res = requests.post(
+            "https://app.docupanda.io/document",
+            json={"document": {"file": {"contents": encoded, "filename": file.filename}}},
+            headers={
+                "accept": "application/json",
+                "content-type": "application/json",
+                "X-API-Key": DOCUPANDA_API_KEY,
+            },
+        )
 
-    const utilityType = detectedType !== "unknown" ? detectedType : manualType;
-    if (!utilityType) {
-      alert("Please select a utility type.");
-      return;
-    }
+        if upload_res.status_code != 200:
+            raise HTTPException(status_code=400, detail="Upload to DocuPanda failed")
 
-    setUploading(true);
-    setStatus("⏳ Uploading file to DocuPanda...");
+        doc_data = upload_res.json()
+        document_id = doc_data.get("documentId")
+        upload_job_id = doc_data.get("jobId")
 
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("hotel_id", hotelId);
-    formData.append("supplier", "docupanda");
-    formData.append("utility_type", utilityType);
+        if not document_id or not upload_job_id:
+            raise HTTPException(status_code=400, detail="Missing documentId or jobId")
 
-    try {
-      const uploadRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/utilities/parse-and-save`, {
-        method: "POST",
-        body: formData,
-      });
+        # Determine schema
+        bill_type = utility_type.lower()
+        if bill_type == "electricity":
+            schema_id = SCHEMA_ELECTRICITY
+        elif bill_type == "gas":
+            schema_id = SCHEMA_GAS
+        else:
+            raise HTTPException(status_code=400, detail="Unknown utility type")
 
-      if (!uploadRes.ok) throw new Error("Upload failed");
-      const {
-        upload_job_id,
-        standardization_job_id,
-        standardization_id,
-        document_id,
-        filename,
-        bill_type,
-      } = await uploadRes.json();
+        # Trigger standardization
+        std_res = requests.post(
+            "https://app.docupanda.io/standardize/batch",
+            json={"documentIds": [document_id], "schemaId": schema_id},
+            headers={
+                "accept": "application/json",
+                "content-type": "application/json",
+                "X-API-Key": DOCUPANDA_API_KEY,
+            },
+        )
 
-      setStatus("⏳ Waiting for DocuPanda to process the file...");
-      await pollJobStatus(upload_job_id, "Upload");
-      await pollJobStatus(standardization_job_id, "Standardization");
+        if std_res.status_code != 200:
+            raise HTTPException(status_code=400, detail="Standardization request failed")
 
-      setStatus("✅ Finalizing and saving parsed data...");
-      const finalizeData = new FormData();
-      finalizeData.append("document_id", document_id);
-      finalizeData.append("standardization_id", standardization_id);
-      finalizeData.append("hotel_id", hotelId);
-      finalizeData.append("bill_type", bill_type);
-      finalizeData.append("filename", filename);
+        std_data = std_res.json()
+        standardization_id = std_data.get("standardizationId")
+        std_job_id = std_data.get("jobId")
 
-      const finalizeRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/utilities/finalize`, {
-        method: "POST",
-        body: finalizeData,
-      });
+        if not standardization_id or not std_job_id:
+            raise HTTPException(status_code=400, detail="Missing standardizationId or jobId")
 
-      if (!finalizeRes.ok) {
-        const errData = await finalizeRes.json();
-        throw new Error(errData.detail || "Finalize failed");
-      }
+        return {
+            "status": "processing",
+            "document_id": document_id,
+            "upload_job_id": upload_job_id,
+            "standardization_id": standardization_id,
+            "standardization_job_id": std_job_id,
+            "filename": file.filename,
+            "bill_type": bill_type,
+        }
 
-      setStatus("✅ Upload complete. Dashboard will refresh shortly.");
-      onSave?.();
-      setTimeout(onClose, 2000);
-    } catch (err: any) {
-      console.error(err);
-      setStatus(`❌ Error: ${err.message}`);
-    } finally {
-      setUploading(false);
-    }
-  };
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DocuPanda parse error: {str(e)}")
 
-  return (
-    <div className={styles.overlay}>
-      <div className={styles.modal}>
-        <div className={styles.header}>
-          <h2>Upload Utility Bill</h2>
-          <button onClick={onClose}>✕</button>
-        </div>
 
-        <div className={styles.body}>
-          <input type="file" accept="application/pdf" onChange={handleFileChange} />
-          {file && <p>📄 {file.name}</p>}
-          {status && <p>{status}</p>}
+@router.get("/utilities/job-status/{job_id}")
+def get_docupanda_job_status(job_id: str):
+    try:
+        res = requests.get(
+            f"https://app.docupanda.io/job/{job_id}",
+            headers={
+                "accept": "application/json",
+                "X-API-Key": DOCUPANDA_API_KEY,
+            },
+        )
+        return res.json()
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
 
-          {detectedType === "unknown" && (
-            <div>
-              <label>Select Utility Type:</label>
-              <select
-                value={manualType}
-                onChange={(e) => setManualType(e.target.value)}
-                disabled={uploading}
-              >
-                <option value="">-- Select --</option>
-                <option value="electricity">Electricity</option>
-                <option value="gas">Gas</option>
-              </select>
-            </div>
-          )}
-        </div>
 
-        <div className={styles.footer}>
-          <button
-            className={styles.uploadButton}
-            onClick={handleSubmit}
-            disabled={!file || uploading}
-          >
-            {uploading ? "Uploading..." : "Upload Bill"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
+@router.post("/utilities/finalize")
+async def finalize_parsed_bill(
+    document_id: str = Form(...),
+    standardization_id: str = Form(...),
+    hotel_id: str = Form(...),
+    bill_type: str = Form(...),
+    filename: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    try:
+        std_status = requests.get(
+            f"https://app.docupanda.io/standardize/{standardization_id}",
+            headers={"accept": "application/json", "X-API-Key": DOCUPANDA_API_KEY},
+        ).json()
+
+        if std_status.get("status") != "completed":
+            raise HTTPException(status_code=400, detail="Standardization not yet complete")
+
+        parsed = std_status.get("result", {})
+        billing_start = parsed.get("billingPeriod", {}).get("startDate") or datetime.utcnow().strftime("%Y-%m-%d")
+
+        s3_path = save_json_to_s3(parsed, hotel_id, bill_type, billing_start, filename)
+        save_parsed_data_to_db(db, hotel_id, bill_type, parsed, s3_path)
+
+        return {"status": "saved", "path": s3_path}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Finalize error: {str(e)}")
