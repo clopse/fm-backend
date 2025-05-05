@@ -4,6 +4,7 @@ from datetime import datetime
 import base64
 import requests
 import os
+import boto3
 
 from app.db.session import get_db
 from app.db.crud import save_parsed_data_to_db
@@ -11,10 +12,12 @@ from app.utils.s3 import save_json_to_s3
 
 router = APIRouter()
 
+# Constants
 SCHEMA_ELECTRICITY = "3ca991a9"
 SCHEMA_GAS = "33093b4d"
 DOCUPANDA_API_KEY = os.getenv("DOCUPANDA_API_KEY")
 
+# Detect bill type by scanning text
 def detect_bill_type(pages_text: list[str]) -> str:
     joined = " ".join(pages_text).lower()
     if "mprn" in joined or "mic" in joined or "day units" in joined:
@@ -23,6 +26,7 @@ def detect_bill_type(pages_text: list[str]) -> str:
         return "gas"
     return "unknown"
 
+# 1. Precheck: detect type
 @router.post("/utilities/precheck")
 async def precheck_bill_type(file: UploadFile = File(...)):
     try:
@@ -59,6 +63,7 @@ async def precheck_bill_type(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# 2. Upload + trigger standardization
 @router.post("/utilities/parse-and-save")
 async def parse_and_save(
     hotel_id: str = Form(...),
@@ -90,7 +95,6 @@ async def parse_and_save(
         if not document_id or not upload_job_id:
             raise HTTPException(status_code=400, detail="Missing documentId or jobId")
 
-        # Determine schema
         bill_type = utility_type.lower()
         if bill_type == "electricity":
             schema_id = SCHEMA_ELECTRICITY
@@ -99,7 +103,6 @@ async def parse_and_save(
         else:
             raise HTTPException(status_code=400, detail="Unknown utility type")
 
-        # Trigger standardization
         std_res = requests.post(
             "https://app.docupanda.io/standardize/batch",
             json={"documentIds": [document_id], "schemaId": schema_id},
@@ -131,9 +134,11 @@ async def parse_and_save(
         }
 
     except Exception as e:
+        print(f"❌ DocuPanda error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"DocuPanda parse error: {str(e)}")
 
 
+# 3. Poll job status
 @router.get("/utilities/job-status/{job_id}")
 def get_docupanda_job_status(job_id: str):
     try:
@@ -149,6 +154,7 @@ def get_docupanda_job_status(job_id: str):
         return {"status": "error", "detail": str(e)}
 
 
+# 4. Finalize + save
 @router.post("/utilities/finalize")
 async def finalize_parsed_bill(
     document_id: str = Form(...),
@@ -177,3 +183,24 @@ async def finalize_parsed_bill(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Finalize error: {str(e)}")
+
+
+# 5. List existing uploads (fixes 404)
+@router.get("/api/utilities/{hotel_id}/{year}")
+def list_uploaded_utilities(hotel_id: str, year: str):
+    try:
+        s3 = boto3.client(
+            "s3",
+            aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+            aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+            region_name=os.getenv("AWS_REGION", "eu-west-1")
+        )
+        bucket = os.getenv("AWS_BUCKET_NAME")
+        prefix = f"{hotel_id}/utilities/{year}/"
+
+        result = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
+        files = [obj["Key"] for obj in result.get("Contents", [])]
+
+        return {"files": files}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list files: {str(e)}")
