@@ -1,10 +1,15 @@
-from fastapi import APIRouter, UploadFile, File, Form
+from fastapi import APIRouter, UploadFile, File, Form, Depends
 from fastapi.responses import JSONResponse
 import base64
 import requests
 import os
 import time
 from datetime import datetime
+from sqlalchemy.orm import Session
+
+from app.db.session import get_db
+from app.db.crud import save_parsed_data_to_db
+from app.utils.s3 import save_json_to_s3
 
 router = APIRouter()
 
@@ -27,6 +32,7 @@ async def parse_and_save(
     utility_type: str = Form(...),
     supplier: str = Form(...),
     file: UploadFile = File(...),
+    db: Session = Depends(get_db)
 ):
     try:
         content = await file.read()
@@ -80,8 +86,12 @@ async def parse_and_save(
             if result.get("status") == "completed":
                 parsed = result.get("result", {})
 
-                # OPTIONAL: Save to DB, S3, or local filesystem here using `parsed` and `hotel_id`
-                return {"status": "success", "data": parsed}
+                # Step 5: Save to S3 and DB
+                billing_start = parsed.get("billingPeriod", {}).get("startDate") or datetime.utcnow().strftime("%Y-%m-%d")
+                s3_path = save_json_to_s3(parsed, hotel_id, utility_type, billing_start, file.filename)
+                save_parsed_data_to_db(db, hotel_id, utility_type, parsed, s3_path)
+
+                return {"status": "success", "s3_path": s3_path, "parsed": parsed}
 
         raise Exception("Standardization timed out or failed.")
 
