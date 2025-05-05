@@ -1,4 +1,3 @@
-# app/utils/s3.py
 import boto3
 import os
 import json
