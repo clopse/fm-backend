@@ -52,11 +52,19 @@ async def parse_and_save(
         if not document_id:
             raise Exception("No documentId returned from DocuPanda upload.")
 
-        # Step 2: Get plain text
-        doc_res = requests.get(
-            f"https://app.docupanda.io/document/{document_id}",
-            headers={"accept": "application/json", "X-API-Key": DOCUPANDA_API_KEY},
-        ).json()
+        # Step 2: Poll until document is ready
+        for _ in range(10):
+            time.sleep(3)
+            doc_res = requests.get(
+                f"https://app.docupanda.io/document/{document_id}",
+                headers={"accept": "application/json", "X-API-Key": DOCUPANDA_API_KEY},
+            ).json()
+
+            if doc_res.get("status") == "completed":
+                break
+        else:
+            raise Exception("DocuPanda document processing timed out.")
+
         pages_text = doc_res.get("result", {}).get("pagesText", [])
         bill_type = detect_bill_type(pages_text)
         schema_id = SCHEMA_ELECTRICITY if bill_type == "electricity" else SCHEMA_GAS
@@ -76,8 +84,8 @@ async def parse_and_save(
             raise Exception("No standardizationId returned.")
 
         # Step 4: Poll for result
-        for _ in range(6):
-            time.sleep(5)
+        for _ in range(10):
+            time.sleep(3)
             result = requests.get(
                 f"https://app.docupanda.io/standardize/{std_id}",
                 headers={"accept": "application/json", "X-API-Key": DOCUPANDA_API_KEY},
