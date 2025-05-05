@@ -85,15 +85,15 @@ def process_and_store_docupanda(db, content, hotel_id, utility_type, supplier, f
         schema_id = SCHEMA_ELECTRICITY if bill_type == "electricity" else SCHEMA_GAS
 
        # Step 4: Standardize document
-std_res = requests.post(
-    "https://app.docupanda.io/standardize/batch",
-    json={"documentIds": [document_id], "schemaId": schema_id},
-    headers={
-        "accept": "application/json",
-        "content-type": "application/json",
-        "X-API-Key": DOCUPANDA_API_KEY,
-    },
-)
+        std_res = requests.post(
+        "https://app.docupanda.io/standardize/batch",
+        json={"documentIds": [document_id], "schemaId": schema_id},
+        headers={
+            "accept": "application/json",
+            "content-type": "application/json",
+            "X-API-Key": DOCUPANDA_API_KEY,
+        },
+    )
 
 # Debug output to help trace standardization errors
 print(f"Standardize response: {std_res.status_code} - {std_res.text}")
