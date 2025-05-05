@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from datetime import datetime
 import base64
 import requests
+import time
 import os
 import boto3
 
@@ -12,7 +13,7 @@ from app.utils.s3 import save_json_to_s3
 
 router = APIRouter()
 
-# Constants
+# Schema IDs for electricity and gas
 SCHEMA_ELECTRICITY = "3ca991a9"
 SCHEMA_GAS = "33093b4d"
 DOCUPANDA_API_KEY = os.getenv("DOCUPANDA_API_KEY")
@@ -26,7 +27,26 @@ def detect_bill_type(pages_text: list[str]) -> str:
         return "gas"
     return "unknown"
 
-# 1. Precheck: detect type
+# Poll a job until completion or timeout
+def poll_job_status(job_id: str, max_attempts: int = 20, delay: int = 6) -> bool:
+    for attempt in range(max_attempts):
+        res = requests.get(
+            f"https://app.docupanda.io/job/{job_id}",
+            headers={
+                "accept": "application/json",
+                "X-API-Key": DOCUPANDA_API_KEY,
+            },
+        )
+        status = res.json().get("status")
+        print(f"🕓 Polling job {job_id} attempt {attempt + 1}: {status}")
+        if status == "completed":
+            return True
+        if status == "error":
+            raise RuntimeError("Upload job failed.")
+        time.sleep(delay)
+    raise RuntimeError("Upload job timed out.")
+
+# 1. Precheck endpoint to guess type
 @router.post("/utilities/precheck")
 async def precheck_bill_type(file: UploadFile = File(...)):
     try:
@@ -63,7 +83,7 @@ async def precheck_bill_type(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# 2. Upload + trigger standardization
+# 2. Upload and wait before triggering schema
 @router.post("/utilities/parse-and-save")
 async def parse_and_save(
     hotel_id: str = Form(...),
@@ -75,6 +95,7 @@ async def parse_and_save(
         content = await file.read()
         encoded = base64.b64encode(content).decode()
 
+        # Upload document
         upload_res = requests.post(
             "https://app.docupanda.io/document",
             json={"document": {"file": {"contents": encoded, "filename": file.filename}}},
@@ -95,6 +116,13 @@ async def parse_and_save(
         if not document_id or not upload_job_id:
             raise HTTPException(status_code=400, detail="Missing documentId or jobId")
 
+        # Poll for upload completion
+        try:
+            poll_job_status(upload_job_id)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Upload job did not complete: {str(e)}")
+
+        # Choose schema
         bill_type = utility_type.lower()
         if bill_type == "electricity":
             schema_id = SCHEMA_ELECTRICITY
@@ -103,6 +131,7 @@ async def parse_and_save(
         else:
             raise HTTPException(status_code=400, detail="Unknown utility type")
 
+        # Trigger standardization
         std_res = requests.post(
             "https://app.docupanda.io/standardize/batch",
             json={"documentIds": [document_id], "schemaId": schema_id},
@@ -138,7 +167,7 @@ async def parse_and_save(
         raise HTTPException(status_code=500, detail=f"DocuPanda parse error: {str(e)}")
 
 
-# 3. Poll job status
+# 3. Poll standardization or upload status
 @router.get("/utilities/job-status/{job_id}")
 def get_docupanda_job_status(job_id: str):
     try:
@@ -154,7 +183,7 @@ def get_docupanda_job_status(job_id: str):
         return {"status": "error", "detail": str(e)}
 
 
-# 4. Finalize + save
+# 4. Finalize and save
 @router.post("/utilities/finalize")
 async def finalize_parsed_bill(
     document_id: str = Form(...),
@@ -185,7 +214,7 @@ async def finalize_parsed_bill(
         raise HTTPException(status_code=500, detail=f"Finalize error: {str(e)}")
 
 
-# 5. List existing uploads (fixes 404)
+# 5. List S3 files
 @router.get("/api/utilities/{hotel_id}/{year}")
 def list_uploaded_utilities(hotel_id: str, year: str):
     try:
