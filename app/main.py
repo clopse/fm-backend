@@ -14,7 +14,8 @@ from app.routers import (
     tenders,
     compliance,
     files,              # ✅ For service reports
-    monthly_checklist   # ✅ NEW: checklist confirmation API
+    monthly_checklist,  # ✅ Checklist confirmation API
+    due_tasks           # ✅ New: "Tasks Due" logic
 )
 
 app = FastAPI()
@@ -38,7 +39,8 @@ app.include_router(tenders.router)
 app.include_router(drawings.router)
 app.include_router(compliance.router, prefix="/compliance", tags=["compliance"])
 app.include_router(files.router)
-app.include_router(monthly_checklist.router, prefix="/api/compliance", tags=["monthly-checklist"])  # ✅ New
+app.include_router(monthly_checklist.router, prefix="/api/compliance", tags=["monthly-checklist"])
+app.include_router(due_tasks.router, prefix="/api/compliance", tags=["due-tasks"])  # ✅ Added
 
 @app.get("/")
 def read_root():
