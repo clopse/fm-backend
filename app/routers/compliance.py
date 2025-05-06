@@ -29,7 +29,7 @@ async def upload_compliance_doc(
     if not file or not file.file:
         raise HTTPException(status_code=400, detail="No file received")
 
-    try:try:
+    try:
     parsed_date = datetime.strptime(report_date, "%d/%m/%Y")
     if parsed_date > datetime.utcnow():
         raise HTTPException(status_code=400, detail="Report date cannot be in the future.")
