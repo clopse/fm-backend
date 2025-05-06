@@ -6,15 +6,14 @@ import requests
 import os
 import time
 from app.db.session import get_db
-from app.db.crud import save_parsed_data_to_db
-from app.utils.s3 import save_json_to_s3
+from app.db.crud import save_parsed_data_to_db, get_utility_data_for_year
+from app.utils.s3 import save_json_to_s3, save_pdf_to_s3
 
 router = APIRouter()
 
 DOCUPANDA_API_KEY = os.getenv("DOCUPANDA_API_KEY")
 SCHEMA_ELECTRICITY = "3ca991a9"
 SCHEMA_GAS = "bd3ec499"
-
 
 def detect_bill_type(pages_text: list[str]) -> str:
     joined = " ".join(pages_text).lower()
@@ -24,12 +23,10 @@ def detect_bill_type(pages_text: list[str]) -> str:
         return "gas"
     return "electricity"
 
-
 @router.post("/utilities/parse-and-save")
 async def parse_and_save(
     background_tasks: BackgroundTasks,
     hotel_id: str = Form(...),
-    utility_type: str = Form(...),
     supplier: str = Form(...),
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
@@ -42,7 +39,6 @@ async def parse_and_save(
         db, content, hotel_id, supplier, filename
     )
     return {"status": "processing", "message": "Upload received. Processing in background."}
-
 
 def process_and_store_docupanda(db, content, hotel_id, supplier, filename):
     try:
@@ -122,9 +118,10 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename):
             if status == "completed":
                 parsed = std_json.get("result", {})
                 billing_start = parsed.get("billingPeriod", {}).get("startDate") or datetime.utcnow().strftime("%Y-%m-%d")
-                s3_path = save_json_to_s3(parsed, hotel_id, bill_type, billing_start, filename)
-                save_parsed_data_to_db(db, hotel_id, bill_type, parsed, s3_path)
-                print(f"✅ Saved to S3 and DB: {s3_path}")
+                s3_json_path = save_json_to_s3(parsed, hotel_id, bill_type, billing_start, filename)
+                save_pdf_to_s3(content, hotel_id, bill_type, billing_start, filename)  # Save PDF too
+                save_parsed_data_to_db(db, hotel_id, bill_type, parsed, s3_json_path)
+                print(f"✅ Saved to S3 and DB: {s3_json_path}")
                 return
             elif status == "error":
                 print("❌ Standardization failed.")
@@ -134,3 +131,12 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename):
 
     except Exception as e:
         print(f"❌ Exception during processing: {e}")
+
+
+@router.get("/api/{hotel_id}/utilities/{year}")
+def get_utilities(hotel_id: str, year: int, db: Session = Depends(get_db)):
+    try:
+        results = get_utility_data_for_year(db, hotel_id, year)
+        return {"status": "success", "data": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch utility data: {e}")
