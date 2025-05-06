@@ -57,7 +57,6 @@ export default function ComplianceLeaderboard({ data }: { data: ScoreEntry[] }) 
 
         <div className={styles.dropdownWrapper}>
           <button onClick={() => setDropdownOpen(!dropdownOpen)} className={styles.dropdownButton}>
-            ▼
           </button>
           {dropdownOpen && (
             <div className={styles.dropdownMenu}>
