@@ -5,6 +5,7 @@ import Link from 'next/link';
 import Image from 'next/image';
 import styles from '@/styles/ComplianceLeaderboard.module.css';
 import { hotels } from '@/lib/hotels';
+import { ChevronDown } from 'lucide-react';
 
 type ScoreEntry = {
   hotel: string;
@@ -17,14 +18,6 @@ export default function ComplianceLeaderboard({ data }: { data: ScoreEntry[] }) 
   const [dropdownOpen, setDropdownOpen] = useState(false);
 
   useEffect(() => {
-    const sorted = [...data].sort((a, b) => {
-      if (b.score === a.score) return a.hotel.localeCompare(b.hotel);
-      return b.score - a.score;
-    });
-    setSortedData(sorted);
-  }, [data]);
-
-  useEffect(() => {
     const saved = localStorage.getItem('selectedHotels');
     if (saved) {
       setSelectedHotels(JSON.parse(saved));
@@ -32,6 +25,14 @@ export default function ComplianceLeaderboard({ data }: { data: ScoreEntry[] }) 
       setSelectedHotels(hotels.map(h => h.id));
     }
   }, []);
+
+  useEffect(() => {
+    const sorted = [...data].sort((a, b) => {
+      if (b.score === a.score) return a.hotel.localeCompare(b.hotel);
+      return b.score - a.score;
+    });
+    setSortedData(sorted);
+  }, [data]);
 
   const toggleHotel = (id: string) => {
     const updated = selectedHotels.includes(id)
@@ -41,14 +42,12 @@ export default function ComplianceLeaderboard({ data }: { data: ScoreEntry[] }) 
     localStorage.setItem('selectedHotels', JSON.stringify(updated));
   };
 
-  const getHotelId = (name: string): string => {
-    return hotels.find((h) => h.name === name)?.id || 'unknown';
-  };
+  const getHotelId = (name: string): string =>
+    hotels.find(h => h.name === name)?.id || 'unknown';
 
-  const filteredData = sortedData.filter((entry) => {
-    const id = getHotelId(entry.hotel);
-    return selectedHotels.includes(id);
-  });
+  const filteredData = sortedData.filter(entry =>
+    selectedHotels.includes(getHotelId(entry.hotel))
+  );
 
   return (
     <div className={styles.container}>
@@ -56,7 +55,12 @@ export default function ComplianceLeaderboard({ data }: { data: ScoreEntry[] }) 
         <h2 className={styles.header}>Compliance Leaderboard</h2>
 
         <div className={styles.dropdownWrapper}>
-          <button onClick={() => setDropdownOpen(!dropdownOpen)} className={styles.dropdownButton}>
+          <button
+            onClick={() => setDropdownOpen(!dropdownOpen)}
+            className={styles.dropdownButton}
+            title="Select Hotels"
+          >
+            <ChevronDown size={16} />
           </button>
           {dropdownOpen && (
             <div className={styles.dropdownMenu}>
@@ -97,14 +101,14 @@ export default function ComplianceLeaderboard({ data }: { data: ScoreEntry[] }) 
                   />
                 </Link>
               </div>
-
               <div className={styles.barWrapper}>
                 <div
                   className={styles.bar}
                   style={{
                     width: `${entry.score}%`,
                     backgroundColor:
-                      entry.score >= 85 ? '#28a745' : entry.score >= 70 ? '#ffc107' : '#dc3545',
+                      entry.score >= 85 ? '#28a745' :
+                      entry.score >= 70 ? '#ffc107' : '#dc3545',
                   }}
                 />
                 <span className={styles.score} title="Latest Compliance Score">
