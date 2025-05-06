@@ -121,6 +121,7 @@ def process_and_store_docupanda(db, content, hotel_id, utility_type, supplier, f
             return
 
         schema_id = SCHEMA_ELECTRICITY if utility_type == "electricity" else SCHEMA_GAS
+
         std_payload = {
             "documentIds": [document_id],
             "schemaId": schema_id,
@@ -168,46 +169,3 @@ def process_and_store_docupanda(db, content, hotel_id, utility_type, supplier, f
 
     except Exception as e:
         print(f"❌ Error during parse-and-save: {e}")
-
-@router.post("/utilities/finalize")
-async def finalize_parsed_bill(
-    document_id: str = Form(...),
-    standardization_id: str = Form(...),
-    hotel_id: str = Form(...),
-    bill_type: str = Form(...),
-    filename: str = Form(...),
-    db: Session = Depends(get_db)
-):
-    try:
-        std_status = requests.get(
-            f"https://app.docupanda.io/standardize/{standardization_id}",
-            headers={"accept": "application/json", "X-API-Key": DOCUPANDA_API_KEY},
-        ).json()
-
-        if std_status.get("status") != "completed":
-            raise HTTPException(status_code=400, detail="Standardization not yet complete")
-
-        parsed = std_status.get("result", {})
-        billing_start = parsed.get("billingPeriod", {}).get("startDate") or datetime.utcnow().strftime("%Y-%m-%d")
-        s3_path = save_json_to_s3(parsed, hotel_id, bill_type, billing_start, filename)
-        save_parsed_data_to_db(db, hotel_id, bill_type, parsed, s3_path)
-
-        return {"status": "saved", "path": s3_path}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Finalize error: {str(e)}")
-
-@router.get("/api/utilities/{hotel_id}/{year}")
-def list_uploaded_utilities(hotel_id: str, year: str):
-    try:
-        s3 = boto3.client(
-            "s3",
-            aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-            aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
-            region_name=os.getenv("AWS_REGION", "eu-west-1")
-        )
-        prefix = f"{hotel_id}/utilities/{year}/"
-        result = s3.list_objects_v2(Bucket=AWS_BUCKET_NAME, Prefix=prefix)
-        files = [obj["Key"] for obj in result.get("Contents", [])]
-        return {"files": files}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list files: {str(e)}")
