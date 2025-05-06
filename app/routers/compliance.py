@@ -5,8 +5,8 @@ from dotenv import load_dotenv
 import os
 import json
 import boto3
-
 from typing import List
+
 from app.database import get_db
 from app.models import SafetyCheck
 from app.schemas.common import SuccessResponse
@@ -25,9 +25,9 @@ s3 = boto3.client(
 
 router = APIRouter()
 
-# Upload Safety Score document
-@router.post("/uploads/safety-score", response_model=SuccessResponse)
-async def upload_safety_score_doc(
+
+@router.post("/uploads/compliance", response_model=SuccessResponse)
+async def upload_compliance_doc(
     hotel_id: str = Form(...),
     task_id: str = Form(...),
     report_date: str = Form(...),
@@ -37,18 +37,22 @@ async def upload_safety_score_doc(
     if not file or not file.file:
         raise HTTPException(status_code=400, detail="No file received")
 
-    s3_key = f"{hotel_id}/{task_id}/{datetime.utcnow().strftime('%Y/%m/%d')}/{file.filename}"
+    timestamp = datetime.utcnow().strftime('%Y%m%d%H%M%S')
+    s3_key = f"{hotel_id}/compliance/{task_id}/{timestamp}_{file.filename}"
     metadata_key = s3_key + ".json"
 
     try:
+        # Upload the file
         s3.upload_fileobj(file.file, os.getenv("AWS_BUCKET_NAME"), s3_key)
 
+        # Create metadata JSON
         metadata = {
             "report_date": report_date,
-            "uploaded_at": datetime.utcnow().strftime("%Y-%m-%d"),
+            "uploaded_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
             "filename": file.filename,
         }
 
+        # Upload metadata as JSON file
         s3.put_object(
             Body=json.dumps(metadata, indent=2),
             Bucket=os.getenv("AWS_BUCKET_NAME"),
@@ -58,6 +62,7 @@ async def upload_safety_score_doc(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error uploading to S3: {str(e)}")
 
+    # Record in database if needed
     db_doc = SafetyCheck(
         hotel_id=hotel_id,
         task_id=task_id,
@@ -67,17 +72,15 @@ async def upload_safety_score_doc(
     db.add(db_doc)
     db.commit()
 
-    return SuccessResponse(id=str(db_doc.id), message="File and metadata saved")
+    return SuccessResponse(id=str(db_doc.id), message="Compliance file uploaded successfully")
 
 
-# Calculate current safety score
-@router.get("/api/safety/score/{hotel_id}", response_model=SafetyScoreResponse)
-def get_safety_score(hotel_id: str):
+@router.get("/api/compliance/score/{hotel_id}", response_model=SafetyScoreResponse)
+def get_compliance_score(hotel_id: str):
     RULES_PATH = "app/data/taskRules.json"
-    year = str(datetime.now().year)
     now = datetime.now()
     three_months_ago = now - timedelta(days=90)
-    reports_path = f"{hotel_id}/{year}/reports"
+    reports_path = f"{hotel_id}/compliance"
 
     try:
         with open(RULES_PATH, "r") as f:
@@ -97,7 +100,7 @@ def get_safety_score(hotel_id: str):
         try:
             resp = s3.list_objects_v2(
                 Bucket=os.getenv("AWS_BUCKET_NAME"),
-                Prefix=f"{reports_path}/{task_id}"
+                Prefix=f"{reports_path}/{task_id}/"
             )
             for obj in resp.get("Contents", []):
                 if obj["Key"].endswith(".json"):
@@ -121,12 +124,10 @@ def get_safety_score(hotel_id: str):
     )
 
 
-# Score history by week
-@router.get("/api/safety/score-history/{hotel_id}", response_model=List[WeeklyScore])
-def get_safety_score_history(hotel_id: str):
+@router.get("/api/compliance/score-history/{hotel_id}", response_model=List[WeeklyScore])
+def get_compliance_score_history(hotel_id: str):
     RULES_PATH = "app/data/taskRules.json"
-    year = str(datetime.now().year)
-    reports_path = f"{hotel_id}/{year}/reports"
+    reports_path = f"{hotel_id}/compliance"
 
     try:
         with open(RULES_PATH, "r") as f:
@@ -142,7 +143,7 @@ def get_safety_score_history(hotel_id: str):
         try:
             resp = s3.list_objects_v2(
                 Bucket=os.getenv("AWS_BUCKET_NAME"),
-                Prefix=f"{reports_path}/{task_id}"
+                Prefix=f"{reports_path}/{task_id}/"
             )
             for obj in resp.get("Contents", []):
                 if obj["Key"].endswith(".json"):
