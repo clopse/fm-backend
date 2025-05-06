@@ -1,5 +1,5 @@
 # /app/routers/due_tasks.py
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
@@ -20,7 +20,8 @@ s3 = boto3.client(
 RULES_PATH = "app/data/compliance.json"
 BUCKET = os.getenv("AWS_BUCKET_NAME")
 
-# ---- POST endpoint to acknowledge task ----
+
+# === Acknowledge next month's task ===
 class AcknowledgePayload(BaseModel):
     hotel_id: str
     task_id: str
@@ -37,12 +38,14 @@ async def acknowledge_task(payload: AcknowledgePayload):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not save acknowledgment: {e}")
 
-# ---- GET endpoint to fetch due and next month tasks ----
+
+# === Get due and next-month tasks ===
 @router.get("/api/compliance/due-tasks/{hotel_id}")
 async def get_due_tasks(hotel_id: str):
     now = datetime.utcnow()
     month_start = now.replace(day=1)
     next_month = (month_start + timedelta(days=32)).replace(day=1)
+    next_month_end = (next_month + timedelta(days=32)).replace(day=1)
 
     try:
         with open(RULES_PATH, "r") as f:
@@ -88,8 +91,8 @@ async def get_due_tasks(hotel_id: str):
                 pass
 
             next_due = (latest + timedelta(days=period)) if latest else datetime.min
-            
-            # Check if acknowledged for next month
+
+            # Check if task is acknowledged (ignored) for next month
             ack_key = f"{hotel_id}/acknowledged/{task_id}-{next_month.strftime('%Y-%m')}.json"
             is_acknowledged = False
             try:
@@ -100,7 +103,7 @@ async def get_due_tasks(hotel_id: str):
 
             if month_start <= next_due < next_month:
                 due_this_month.append(task)
-            elif next_month <= next_due < (next_month + timedelta(days=31)) and not is_acknowledged:
+            elif next_month <= next_due < next_month_end and not is_acknowledged:
                 next_month_due.append(task)
 
     return {
