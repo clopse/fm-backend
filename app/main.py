@@ -14,8 +14,8 @@ from app.routers import (
     utilities,
     drawings,
     tenders,
-    safety,
-    files,  # ✅ Now correctly import files (renamed from service_reports)
+    compliance,
+    files,       # ✅ For service reports, renamed to files
 )
 
 app = FastAPI()
@@ -34,12 +34,11 @@ app.add_middleware(
 )
 
 # Include Routers
-# app.include_router(uploads.router)   # (Enable uploads if you need later)
 app.include_router(utilities.router)
 app.include_router(tenders.router)
 app.include_router(drawings.router)
-app.include_router(safety.router)
-app.include_router(files.router)  # ✅ Correct router here
+app.include_router(compliance.router, prefix="/compliance", tags=["compliance"])  # ✅ Corrected
+app.include_router(files.router)
 
 @app.get("/")
 def read_root():
