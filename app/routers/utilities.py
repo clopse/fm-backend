@@ -21,7 +21,6 @@ SCHEMA_ELECTRICITY = "3ca991a9"
 SCHEMA_GAS = "33093b4d"
 AWS_BUCKET_NAME = os.getenv("AWS_BUCKET_NAME")
 
-
 def detect_bill_type_from_pdf(file_bytes: bytes) -> str:
     try:
         with pdfplumber.open(BytesIO(file_bytes)) as pdf:
@@ -34,7 +33,6 @@ def detect_bill_type_from_pdf(file_bytes: bytes) -> str:
         print(f"❌ Error reading PDF: {e}")
     return "electricity"  # fallback
 
-
 @router.post("/utilities/precheck")
 async def precheck_bill_type(file: UploadFile = File(...)):
     try:
@@ -43,7 +41,6 @@ async def precheck_bill_type(file: UploadFile = File(...)):
         return {"bill_type": bill_type, "filename": file.filename}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Precheck error: {str(e)}")
-
 
 @router.post("/utilities/parse-and-save")
 async def parse_and_save(
@@ -62,7 +59,6 @@ async def parse_and_save(
         db, content, hotel_id, utility_type, supplier, filename
     )
     return {"status": "processing", "message": "Upload received. Processing in background."}
-
 
 def process_and_store_docupanda(db, content, hotel_id, utility_type, supplier, filename):
     try:
@@ -91,7 +87,6 @@ def process_and_store_docupanda(db, content, hotel_id, utility_type, supplier, f
             print("❌ Missing documentId or jobId.")
             return
 
-        # Step 2: Poll job status
         for attempt in range(10):
             time.sleep(6)
             res = requests.get(
@@ -110,7 +105,6 @@ def process_and_store_docupanda(db, content, hotel_id, utility_type, supplier, f
             print("❌ Upload job timeout.")
             return
 
-        # Step 3: Wait for document to be ready
         for attempt in range(10):
             time.sleep(10)
             doc_check = requests.get(
@@ -126,11 +120,11 @@ def process_and_store_docupanda(db, content, hotel_id, utility_type, supplier, f
             print("❌ Document never reached 'ready' status.")
             return
 
-        # Step 4: Standardize
         schema_id = SCHEMA_ELECTRICITY if utility_type == "electricity" else SCHEMA_GAS
         std_payload = {
             "documentIds": [document_id],
-            "schemaId": schema_id
+            "schemaId": schema_id,
+            "forceRecompute": True
         }
 
         std_res = requests.post(
@@ -150,7 +144,6 @@ def process_and_store_docupanda(db, content, hotel_id, utility_type, supplier, f
             print("❌ No standardizationId returned")
             return
 
-        # Step 5: Poll standardization
         for attempt in range(10):
             time.sleep(6)
             result = requests.get(
@@ -175,7 +168,6 @@ def process_and_store_docupanda(db, content, hotel_id, utility_type, supplier, f
 
     except Exception as e:
         print(f"❌ Error during parse-and-save: {e}")
-
 
 @router.post("/utilities/finalize")
 async def finalize_parsed_bill(
@@ -203,7 +195,6 @@ async def finalize_parsed_bill(
         return {"status": "saved", "path": s3_path}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Finalize error: {str(e)}")
-
 
 @router.get("/api/utilities/{hotel_id}/{year}")
 def list_uploaded_utilities(hotel_id: str, year: str):
