@@ -6,7 +6,6 @@ import os
 import json
 import boto3
 from typing import List
-
 from app.database import get_db
 from app.models import SafetyCheck
 from app.schemas.common import SuccessResponse
