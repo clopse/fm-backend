@@ -29,12 +29,13 @@ async def upload_compliance_doc(
     if not file or not file.file:
         raise HTTPException(status_code=400, detail="No file received")
 
+    # Validate and parse report date
     try:
-    parsed_date = datetime.strptime(report_date, "%d/%m/%Y")
-    if parsed_date > datetime.utcnow():
-        raise HTTPException(status_code=400, detail="Report date cannot be in the future.")
-except ValueError:
-    raise HTTPException(status_code=400, detail="Invalid report_date format. Use DD/MM/YYYY.")
+        parsed_date = datetime.strptime(report_date, "%d/%m/%Y")
+        if parsed_date > datetime.utcnow():
+            raise HTTPException(status_code=400, detail="Report date cannot be in the future.")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid report_date format. Use DD/MM/YYYY.")
 
     timestamp = datetime.utcnow().strftime('%Y%m%d%H%M%S')
     s3_key = f"{hotel_id}/compliance/{task_id}/{timestamp}_{file.filename}"
