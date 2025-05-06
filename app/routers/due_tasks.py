@@ -1,5 +1,6 @@
 # /app/routers/due_tasks.py
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import os
@@ -19,12 +20,29 @@ s3 = boto3.client(
 RULES_PATH = "app/data/compliance.json"
 BUCKET = os.getenv("AWS_BUCKET_NAME")
 
+# ---- POST endpoint to acknowledge task ----
+class AcknowledgePayload(BaseModel):
+    hotel_id: str
+    task_id: str
+
+@router.post("/api/compliance/acknowledge-task")
+async def acknowledge_task(payload: AcknowledgePayload):
+    now = datetime.utcnow()
+    key = f"{payload.hotel_id}/acknowledged/{payload.task_id}-{now.strftime('%Y-%m')}.json"
+    body = json.dumps({"acknowledged_at": now.isoformat()})
+
+    try:
+        s3.put_object(Bucket=BUCKET, Key=key, Body=body)
+        return {"message": "Task acknowledged successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not save acknowledgment: {e}")
+
+# ---- GET endpoint to fetch due and next month tasks ----
 @router.get("/api/compliance/due-tasks/{hotel_id}")
 async def get_due_tasks(hotel_id: str):
     now = datetime.utcnow()
     month_start = now.replace(day=1)
     next_month = (month_start + timedelta(days=32)).replace(day=1)
-    three_months_ago = now - timedelta(days=90)
 
     try:
         with open(RULES_PATH, "r") as f:
@@ -41,7 +59,6 @@ async def get_due_tasks(hotel_id: str):
                 continue
 
             freq = task["frequency"].lower()
-            grace_days = 30
             period = {
                 "monthly": 30,
                 "quarterly": 90,
@@ -71,9 +88,19 @@ async def get_due_tasks(hotel_id: str):
                 pass
 
             next_due = (latest + timedelta(days=period)) if latest else datetime.min
+            
+            # Check if acknowledged for next month
+            ack_key = f"{hotel_id}/acknowledged/{task_id}-{next_month.strftime('%Y-%m')}.json"
+            is_acknowledged = False
+            try:
+                s3.head_object(Bucket=BUCKET, Key=ack_key)
+                is_acknowledged = True
+            except:
+                pass
+
             if month_start <= next_due < next_month:
                 due_this_month.append(task)
-            elif next_month <= next_due < (next_month + timedelta(days=31)):
+            elif next_month <= next_due < (next_month + timedelta(days=31)) and not is_acknowledged:
                 next_month_due.append(task)
 
     return {
