@@ -119,7 +119,7 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename):
                 parsed = std_json.get("result", {})
                 billing_start = parsed.get("billingPeriod", {}).get("startDate") or datetime.utcnow().strftime("%Y-%m-%d")
                 s3_json_path = save_json_to_s3(parsed, hotel_id, bill_type, billing_start, filename)
-                save_pdf_to_s3(content, hotel_id, bill_type, billing_start, filename)  # Save PDF too
+                save_pdf_to_s3(content, hotel_id, bill_type, billing_start, filename)
                 save_parsed_data_to_db(db, hotel_id, bill_type, parsed, s3_json_path)
                 print(f"✅ Saved to S3 and DB: {s3_json_path}")
                 return
@@ -137,6 +137,19 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename):
 def get_utilities(hotel_id: str, year: int, db: Session = Depends(get_db)):
     try:
         results = get_utility_data_for_year(db, hotel_id, year)
-        return {"status": "success", "data": results}
+        return {
+            "status": "success",
+            "data": [
+                {
+                    "billing_start": r.billing_start,
+                    "customer_ref": r.customer_ref,
+                    "billing_ref": r.billing_ref,
+                    "meter_number": r.meter_number,
+                    "total_amount": r.total_amount,
+                    "s3_path": r.s3_path,
+                }
+                for r in results
+            ]
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch utility data: {e}")
