@@ -114,9 +114,7 @@ def process_and_store_docupanda(db, content, hotel_id, utility_type, supplier, f
             print("❌ Document never reached 'ready' status.")
             return
 
-        pages_text = doc_check.get("result", {}).get("pagesText", [])
-        detected_type = detect_bill_type_from_pdf(content)
-        schema_id = SCHEMA_ELECTRICITY if detected_type == "electricity" else SCHEMA_GAS
+        schema_id = SCHEMA_ELECTRICITY if utility_type == "electricity" else SCHEMA_GAS
 
         std_res = requests.post(
             "https://app.docupanda.io/standardize/batch",
@@ -144,8 +142,8 @@ def process_and_store_docupanda(db, content, hotel_id, utility_type, supplier, f
             if result.get("status") == "completed":
                 parsed = result.get("result", {})
                 billing_start = parsed.get("billingPeriod", {}).get("startDate") or datetime.utcnow().strftime("%Y-%m-%d")
-                s3_path = save_json_to_s3(parsed, hotel_id, detected_type, billing_start, filename)
-                save_parsed_data_to_db(db, hotel_id, detected_type, parsed, s3_path)
+                s3_path = save_json_to_s3(parsed, hotel_id, utility_type, billing_start, filename)
+                save_parsed_data_to_db(db, hotel_id, utility_type, parsed, s3_path)
                 print(f"✅ Bill parsed and saved: {s3_path}")
                 return
             elif result.get("status") == "error":
