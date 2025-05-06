@@ -1,5 +1,3 @@
-# /app/main.py
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -15,7 +13,8 @@ from app.routers import (
     drawings,
     tenders,
     compliance,
-    files,       # ✅ For service reports, renamed to files
+    files,              # ✅ For service reports
+    monthly_checklist   # ✅ NEW: checklist confirmation API
 )
 
 app = FastAPI()
@@ -37,8 +36,9 @@ app.add_middleware(
 app.include_router(utilities.router)
 app.include_router(tenders.router)
 app.include_router(drawings.router)
-app.include_router(compliance.router, prefix="/compliance", tags=["compliance"])  # ✅ Corrected
+app.include_router(compliance.router, prefix="/compliance", tags=["compliance"])
 app.include_router(files.router)
+app.include_router(monthly_checklist.router, prefix="/api/compliance", tags=["monthly-checklist"])  # ✅ New
 
 @app.get("/")
 def read_root():
