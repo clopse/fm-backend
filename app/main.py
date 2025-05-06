@@ -1,3 +1,5 @@
+# /app/main.py
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -13,9 +15,10 @@ from app.routers import (
     drawings,
     tenders,
     compliance,
-    files,              # ✅ For service reports
-    monthly_checklist,  # ✅ Checklist confirmation API
-    due_tasks           # ✅ New: "Tasks Due" logic
+    files,               # ✅ For service reports
+    monthly_checklist,   # ✅ Checklist confirmation API
+    due_tasks,           # ✅ "Tasks Due" logic
+    compliance_score     # ✅ NEW: Score calculation endpoint
 )
 
 app = FastAPI()
@@ -40,7 +43,8 @@ app.include_router(drawings.router)
 app.include_router(compliance.router, prefix="/compliance", tags=["compliance"])
 app.include_router(files.router)
 app.include_router(monthly_checklist.router, prefix="/api/compliance", tags=["monthly-checklist"])
-app.include_router(due_tasks.router, prefix="/api/compliance", tags=["due-tasks"])  # ✅ Added
+app.include_router(due_tasks.router, prefix="/api/compliance", tags=["due-tasks"])
+app.include_router(compliance_score.router, prefix="/api/compliance", tags=["compliance-score"])  # ✅ NEW
 
 @app.get("/")
 def read_root():
