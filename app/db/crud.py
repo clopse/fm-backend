@@ -1,6 +1,7 @@
 from app.db.models import ParsedUtilityBill
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import extract
 import json
 
 def save_parsed_data_to_db(
@@ -11,7 +12,6 @@ def save_parsed_data_to_db(
     s3_path: str
 ):
     try:
-        # Try extracting billing start date from multiple formats
         billing_start = (
             parsed_data.get("billingPeriod", {}).get("startDate") or
             parsed_data.get("billingPeriodStartDate") or
@@ -49,3 +49,15 @@ def save_parsed_data_to_db(
     except SQLAlchemyError as e:
         db.rollback()
         raise RuntimeError(f"Database error while saving utility bill: {str(e)}")
+
+
+def get_utility_data_for_year(db: Session, hotel_id: str, year: int):
+    return (
+        db.query(ParsedUtilityBill)
+        .filter(
+            ParsedUtilityBill.hotel_id == hotel_id,
+            extract('year', ParsedUtilityBill.billing_start) == year
+        )
+        .order_by(ParsedUtilityBill.billing_start)
+        .all()
+    )
