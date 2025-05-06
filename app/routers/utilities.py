@@ -22,6 +22,7 @@ SCHEMA_GAS = "33093b4d"
 AWS_BUCKET_NAME = os.getenv("AWS_BUCKET_NAME")
 
 # Detect bill type from raw PDF content
+
 def detect_bill_type_from_pdf(file_bytes: bytes) -> str:
     try:
         with pdfplumber.open(BytesIO(file_bytes)) as pdf:
@@ -63,19 +64,25 @@ async def parse_and_save(
 
 def process_and_store_docupanda(db, content, hotel_id, utility_type, supplier, filename):
     try:
+        print(f"\n📦 Starting DocuPanda processing for {filename}")
         encoded = base64.b64encode(content).decode()
 
+        # Step 1: Upload
+        upload_payload = {
+            "document": {"file": {"contents": encoded, "filename": filename}}
+        }
         upload_res = requests.post(
             "https://app.docupanda.io/document",
-            json={"document": {"file": {"contents": encoded, "filename": filename}}},
+            json=upload_payload,
             headers={
                 "accept": "application/json",
                 "content-type": "application/json",
                 "X-API-Key": DOCUPANDA_API_KEY,
             },
         )
+        print(f"📤 Upload response: {upload_res.status_code}")
+        print(upload_res.text)
 
-        print(f"📤 Upload response: {upload_res.status_code} - {upload_res.text}")
         data = upload_res.json()
         document_id = data.get("documentId")
         job_id = data.get("jobId")
@@ -83,71 +90,84 @@ def process_and_store_docupanda(db, content, hotel_id, utility_type, supplier, f
             print("❌ Missing documentId or jobId.")
             return
 
+        # Step 2: Poll job status
         for attempt in range(10):
             time.sleep(6)
             res = requests.get(
                 f"https://app.docupanda.io/job/{job_id}",
                 headers={"accept": "application/json", "X-API-Key": DOCUPANDA_API_KEY},
-            ).json()
-            status = res.get("status")
-            print(f"🕓 Upload job status: {status}")
-            if status == "completed":
+            )
+            print(f"🕓 Job poll {attempt + 1}: {res.status_code}")
+            job_status = res.json()
+            print(job_status)
+            if job_status.get("status") == "completed":
                 break
-            if status == "error":
+            elif job_status.get("status") == "error":
                 print("❌ Upload job failed.")
                 return
         else:
             print("❌ Upload job timeout.")
             return
 
+        # Step 3: Wait for document to be ready
         for attempt in range(10):
             time.sleep(10)
             doc_check = requests.get(
                 f"https://app.docupanda.io/document/{document_id}",
                 headers={"accept": "application/json", "X-API-Key": DOCUPANDA_API_KEY},
-            ).json()
-            doc_status = doc_check.get("status")
-            print(f"📄 Document status: {doc_status}")
-            if doc_status == "ready":
+            )
+            print(f"📄 Document status check {attempt + 1}: {doc_check.status_code}")
+            doc_data = doc_check.json()
+            print(doc_data)
+            if doc_data.get("status") == "ready":
                 break
         else:
             print("❌ Document never reached 'ready' status.")
             return
 
+        # Step 4: Standardize
         schema_id = SCHEMA_ELECTRICITY if utility_type == "electricity" else SCHEMA_GAS
+        std_payload = {
+            "documentIds": [document_id],
+            "schemaId": schema_id
+        }
 
         std_res = requests.post(
             "https://app.docupanda.io/standardize/batch",
-            json={"documentIds": [document_id], "schemaId": schema_id},
+            json=std_payload,
             headers={
                 "accept": "application/json",
                 "content-type": "application/json",
                 "X-API-Key": DOCUPANDA_API_KEY,
             },
         )
-
-        print(f"⚙️ Standardization response: {std_res.status_code} - {std_res.text}")
+        print(f"⚙️ Standardization POST: {std_res.status_code}")
+        print(std_res.text)
         std_data = std_res.json()
         std_id = std_data.get("standardizationId")
         if not std_id:
             print("❌ No standardizationId returned.")
             return
 
+        # Step 5: Poll for standardization result
         for attempt in range(10):
             time.sleep(6)
             result = requests.get(
                 f"https://app.docupanda.io/standardize/{std_id}",
                 headers={"accept": "application/json", "X-API-Key": DOCUPANDA_API_KEY},
-            ).json()
-            if result.get("status") == "completed":
-                parsed = result.get("result", {})
+            )
+            print(f"🔁 Standardization poll {attempt + 1}: {result.status_code}")
+            std_result = result.json()
+            print(std_result)
+            if std_result.get("status") == "completed":
+                parsed = std_result.get("result", {})
                 billing_start = parsed.get("billingPeriod", {}).get("startDate") or datetime.utcnow().strftime("%Y-%m-%d")
                 s3_path = save_json_to_s3(parsed, hotel_id, utility_type, billing_start, filename)
                 save_parsed_data_to_db(db, hotel_id, utility_type, parsed, s3_path)
                 print(f"✅ Bill parsed and saved: {s3_path}")
                 return
-            elif result.get("status") == "error":
-                print(f"❌ Standardization error: {result}")
+            elif std_result.get("status") == "error":
+                print(f"❌ Standardization error: {std_result}")
                 return
         else:
             print("❌ Standardization polling timed out.")
