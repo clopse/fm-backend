@@ -63,19 +63,39 @@ async def upload_compliance_doc(
     from .compliance_score import get_compliance_score
     updated_score = get_compliance_score(hotel_id)
 
-    # Save this month's score snapshot
+    # Save this month's snapshot
     now_month = datetime.utcnow().strftime("%Y-%m")
     if updated_score.get("monthly_history"):
         this_month = updated_score["monthly_history"].get(now_month)
         if this_month:
             try:
+                month_key = f"{hotel_id}/compliance/monthly/{now_month}.json"
                 s3.put_object(
                     Body=json.dumps(this_month, indent=2),
                     Bucket=BUCKET,
-                    Key=f"{hotel_id}/compliance/monthly/{now_month}.json"
+                    Key=month_key
                 )
             except Exception as e:
-                raise HTTPException(status_code=500, detail=f"Failed to save monthly score: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Failed to save monthly snapshot: {str(e)}")
+
+    # Save latest.json snapshot
+    try:
+        latest_score = {
+            "score": updated_score["score"],
+            "max_score": updated_score["max_score"],
+            "percent": updated_score["percent"],
+            "timestamp": datetime.utcnow().isoformat(),
+            "month": now_month,
+            "task_breakdown": updated_score.get("task_breakdown", {})
+        }
+        latest_key = f"{hotel_id}/compliance/latest.json"
+        s3.put_object(
+            Body=json.dumps(latest_score, indent=2),
+            Bucket=BUCKET,
+            Key=latest_key
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save latest.json: {str(e)}")
 
     return {
         "id": s3_key,
