@@ -1,16 +1,16 @@
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Body
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import os
 import json
 import boto3
+
 from app.schemas.common import SuccessResponse
 from app.schemas.safety import SafetyScoreResponse, WeeklyScore
 
-# Load environment variables
 load_dotenv()
 
-# Initialize S3 client
+# AWS S3 setup
 s3 = boto3.client(
     's3',
     aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
@@ -19,13 +19,12 @@ s3 = boto3.client(
 )
 
 BUCKET = os.getenv("AWS_BUCKET_NAME")
-CONFIRM_PREFIX = "confirmations"  # For checkbox-style task confirmations
 DATA_PATH = "app/data/compliance.json"
 
 router = APIRouter()
 
-# ---------- Upload Compliance File ----------
-@router.post("/uploads/compliance", response_model=SuccessResponse)
+# ---------- Upload Compliance File & Update Score ----------
+@router.post("/uploads/compliance", response_model=dict)
 async def upload_compliance_doc(
     hotel_id: str = Form(...),
     task_id: str = Form(...),
@@ -40,7 +39,7 @@ async def upload_compliance_doc(
         if parsed_date > datetime.utcnow():
             raise HTTPException(status_code=400, detail="Report date cannot be in the future.")
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid report_date format. Use DD/MM/YYYY.")
+        raise HTTPException(status_code=400, detail="Invalid report_date format. Use YYYY-MM-DD.")
 
     report_tag = parsed_date.strftime('%Y%m%d')
     unique_suffix = datetime.utcnow().strftime('%H%M%S')
@@ -49,6 +48,7 @@ async def upload_compliance_doc(
     metadata_key = s3_key + ".json"
 
     try:
+        # Upload file and metadata
         s3.upload_fileobj(file.file, BUCKET, s3_key)
         metadata = {
             "report_date": parsed_date.strftime("%Y-%m-%d"),
@@ -59,9 +59,31 @@ async def upload_compliance_doc(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error uploading to S3: {str(e)}")
 
-    return SuccessResponse(id=s3_key, message="Compliance file uploaded successfully")
+    # Recalculate compliance score
+    from .compliance_score import get_compliance_score
+    updated_score = get_compliance_score(hotel_id)
 
-# ---------- Calculate Current Compliance Score ----------
+    # Save this month's score snapshot
+    now_month = datetime.utcnow().strftime("%Y-%m")
+    if updated_score.get("monthly_history"):
+        this_month = updated_score["monthly_history"].get(now_month)
+        if this_month:
+            try:
+                s3.put_object(
+                    Body=json.dumps(this_month, indent=2),
+                    Bucket=BUCKET,
+                    Key=f"{hotel_id}/compliance/monthly/{now_month}.json"
+                )
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to save monthly score: {str(e)}")
+
+    return {
+        "id": s3_key,
+        "message": "Compliance file uploaded successfully",
+        "score": updated_score
+    }
+
+# ---------- Get Current Compliance Score ----------
 @router.get("/api/compliance/score/{hotel_id}", response_model=SafetyScoreResponse)
 def get_compliance_score(hotel_id: str):
     grace_period = timedelta(days=30)
@@ -121,7 +143,7 @@ def get_compliance_score(hotel_id: str):
         breakdown=breakdown
     )
 
-# ---------- Score History Over Weeks ----------
+# ---------- Weekly Score History ----------
 @router.get("/api/compliance/score-history/{hotel_id}", response_model=list[WeeklyScore])
 def get_compliance_score_history(hotel_id: str):
     reports_base = f"{hotel_id}/compliance"
@@ -160,7 +182,7 @@ def get_compliance_score_history(hotel_id: str):
         for week, data in history.items() if data["total"] > 0
     ]
 
-# ---------- Helpers ----------
+# ---------- Helper Functions ----------
 def expected_uploads(frequency: str) -> int:
     return {
         "Monthly": 12,
