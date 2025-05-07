@@ -17,7 +17,8 @@ from app.routers import (
     monthly_checklist,   # ✅ Checklist confirmation API
     due_tasks,           # ✅ "Tasks Due" logic
     compliance_score,    # ✅ Score calculation
-    compliance_leaderboard  # ✅ NEW: leaderboard route
+    compliance_leaderboard,  # ✅ NEW: leaderboard route
+    confirmations        # ✅ NEW: for confirmation-only compliance tasks
 )
 
 app = FastAPI()
@@ -45,7 +46,8 @@ app.include_router(files.router)
 app.include_router(monthly_checklist.router, prefix="/api/compliance", tags=["monthly-checklist"])
 app.include_router(due_tasks.router, prefix="/api/compliance", tags=["due-tasks"])
 app.include_router(compliance_score.router, prefix="/api/compliance", tags=["compliance-score"])
-app.include_router(compliance_leaderboard.router, prefix="/api/compliance", tags=["leaderboard"])  # ✅ NEW
+app.include_router(compliance_leaderboard.router, prefix="/api/compliance", tags=["leaderboard"])
+app.include_router(confirmations.router, prefix="/api/compliance", tags=["confirmations"])  # ✅ NEW
 
 # Base routes
 @app.get("/")
