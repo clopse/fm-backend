@@ -1,4 +1,3 @@
-# /app/routers/due_tasks.py
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from datetime import datetime, timedelta
@@ -26,7 +25,7 @@ class AcknowledgePayload(BaseModel):
     hotel_id: str
     task_id: str
 
-@router.post("/api/compliance/acknowledge-task")
+@router.post("/acknowledge-task")
 async def acknowledge_task(payload: AcknowledgePayload):
     now = datetime.utcnow()
     key = f"{payload.hotel_id}/acknowledged/{payload.task_id}-{now.strftime('%Y-%m')}.json"
@@ -40,7 +39,7 @@ async def acknowledge_task(payload: AcknowledgePayload):
 
 
 # === Get due and next-month tasks ===
-@router.get("/api/compliance/due-tasks/{hotel_id}")
+@router.get("/due-tasks/{hotel_id}")
 async def get_due_tasks(hotel_id: str):
     now = datetime.utcnow()
     month_start = now.replace(day=1)
