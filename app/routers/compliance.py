@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Body
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import os
@@ -7,16 +7,20 @@ import boto3
 from app.schemas.common import SuccessResponse
 from app.schemas.safety import SafetyScoreResponse, WeeklyScore
 
-# Load env vars
+# Load environment variables
 load_dotenv()
 
-# S3 client
+# Initialize S3 client
 s3 = boto3.client(
     's3',
     aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
     aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
     region_name=os.getenv('AWS_REGION')
 )
+
+BUCKET = os.getenv("AWS_BUCKET_NAME")
+CONFIRM_PREFIX = "confirmations"  # For checkbox-style task confirmations
+DATA_PATH = "app/data/compliance.json"
 
 router = APIRouter()
 
@@ -38,22 +42,20 @@ async def upload_compliance_doc(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid report_date format. Use DD/MM/YYYY.")
 
-    timestamp = datetime.utcnow().strftime('%Y%m%d%H%M%S')
-    s3_key = f"{hotel_id}/compliance/{task_id}/{timestamp}_{file.filename}"
+    report_tag = parsed_date.strftime('%Y%m%d')
+    unique_suffix = datetime.utcnow().strftime('%H%M%S')
+    safe_filename = file.filename.replace(" ", "_")
+    s3_key = f"{hotel_id}/compliance/{task_id}/{report_tag}_{unique_suffix}_{safe_filename}"
     metadata_key = s3_key + ".json"
 
     try:
-        s3.upload_fileobj(file.file, os.getenv("AWS_BUCKET_NAME"), s3_key)
+        s3.upload_fileobj(file.file, BUCKET, s3_key)
         metadata = {
             "report_date": parsed_date.strftime("%Y-%m-%d"),
             "uploaded_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "filename": file.filename,
+            "filename": safe_filename,
         }
-        s3.put_object(
-            Body=json.dumps(metadata, indent=2),
-            Bucket=os.getenv("AWS_BUCKET_NAME"),
-            Key=metadata_key,
-        )
+        s3.put_object(Body=json.dumps(metadata, indent=2), Bucket=BUCKET, Key=metadata_key)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error uploading to S3: {str(e)}")
 
@@ -62,7 +64,6 @@ async def upload_compliance_doc(
 # ---------- Calculate Current Compliance Score ----------
 @router.get("/api/compliance/score/{hotel_id}", response_model=SafetyScoreResponse)
 def get_compliance_score(hotel_id: str):
-    DATA_PATH = "app/data/compliance.json"
     grace_period = timedelta(days=30)
     now = datetime.utcnow()
     reports_base = f"{hotel_id}/compliance"
@@ -90,13 +91,12 @@ def get_compliance_score(hotel_id: str):
             valid_files = []
 
             try:
-                resp = s3.list_objects_v2(Bucket=os.getenv("AWS_BUCKET_NAME"), Prefix=f"{reports_base}/{task_id}/")
+                resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=f"{reports_base}/{task_id}/")
                 for obj in resp.get("Contents", []):
                     if obj["Key"].endswith(".json"):
-                        meta = s3.get_object(Bucket=os.getenv("AWS_BUCKET_NAME"), Key=obj["Key"])
+                        meta = s3.get_object(Bucket=BUCKET, Key=obj["Key"])
                         data = json.loads(meta["Body"].read().decode("utf-8"))
                         report_date = datetime.strptime(data["report_date"], "%Y-%m-%d")
-                        age = now - report_date
                         if is_still_valid(frequency, report_date, now, grace_period):
                             valid_files.append(report_date)
             except Exception:
@@ -124,7 +124,6 @@ def get_compliance_score(hotel_id: str):
 # ---------- Score History Over Weeks ----------
 @router.get("/api/compliance/score-history/{hotel_id}", response_model=list[WeeklyScore])
 def get_compliance_score_history(hotel_id: str):
-    DATA_PATH = "app/data/compliance.json"
     reports_base = f"{hotel_id}/compliance"
 
     try:
@@ -142,13 +141,12 @@ def get_compliance_score_history(hotel_id: str):
 
             task_id = task["task_id"]
             points = task.get("points", 20)
-            frequency = task.get("frequency", "Annually")
 
             try:
-                resp = s3.list_objects_v2(Bucket=os.getenv("AWS_BUCKET_NAME"), Prefix=f"{reports_base}/{task_id}/")
+                resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=f"{reports_base}/{task_id}/")
                 for obj in resp.get("Contents", []):
                     if obj["Key"].endswith(".json"):
-                        meta = s3.get_object(Bucket=os.getenv("AWS_BUCKET_NAME"), Key=obj["Key"])
+                        meta = s3.get_object(Bucket=BUCKET, Key=obj["Key"])
                         data = json.loads(meta["Body"].read().decode("utf-8"))
                         report_date = datetime.strptime(data["report_date"], "%Y-%m-%d")
                         week = int(report_date.strftime("%W")) + 1
@@ -164,15 +162,14 @@ def get_compliance_score_history(hotel_id: str):
 
 # ---------- Helpers ----------
 def expected_uploads(frequency: str) -> int:
-    freq_map = {
+    return {
         "Monthly": 12,
         "Quarterly": 4,
         "Twice Annually": 2,
         "Annually": 1,
         "Biennially": 1,
         "Every 5 Years": 1,
-    }
-    return freq_map.get(frequency, 1)
+    }.get(frequency, 1)
 
 def is_still_valid(frequency: str, report_date: datetime, now: datetime, grace: timedelta) -> bool:
     interval = {
