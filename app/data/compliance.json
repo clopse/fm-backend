@@ -1,0 +1,499 @@
+[
+  {
+    "section": "Fire Compliance",
+    "tasks": [
+      {
+        "task_id": "fire_risk_assessment",
+        "label": "Annual Fire Risk Assessment",
+        "frequency": "Annually",
+        "category": "Fire",
+        "type": "upload",
+        "needs_report": "yes",
+        "mandatory": true,
+        "points": 20,
+        "info_popup": "A fire risk assessment must be carried out by a competent person at least annually, or after major changes. It identifies hazards and control measures.\n\n⚖️ Fire Services Act 1981 & 2003 (Ireland); Regulatory Reform (Fire Safety) Order 2005 (UK)"
+      },
+      {
+        "task_id": "fire_alarm_service_certificate",
+        "label": "Quarterly Fire Alarm Service Certificate",
+        "frequency": "Quarterly",
+        "category": "Fire",
+        "type": "upload",
+        "needs_report": "yes",
+        "mandatory": true,
+        "points": 20,
+        "info_popup": "Fire alarm systems must be serviced quarterly by a qualified technician to verify full system operation.\n\n⚖️ IS 3218:2013+A1:2019, Clause 11.2 (Ireland); BS 5839-1:2017 (UK)"
+      },
+      {
+        "task_id": "fire_extinguisher_certificate",
+        "label": "Annual Fire Extinguisher Service Certificate",
+        "frequency": "Annually",
+        "category": "Fire",
+        "type": "upload",
+        "needs_report": "yes",
+        "mandatory": true,
+        "points": 20,
+        "info_popup": "All fire extinguishers must be serviced annually by a competent person and a certificate issued. Records must be retained for inspection.\n\n⚖️ IS 291:2015, Clause 13 (Ireland); BS 5306-3 (UK)"
+      },
+      {
+        "task_id": "emergency_light_cert",
+        "label": "Annual Emergency Lighting Test Certificate",
+        "frequency": "Annually",
+        "category": "Fire",
+        "type": "upload",
+        "needs_report": "yes",
+        "mandatory": true,
+        "points": 20,
+        "info_popup": "An annual 3-hour full discharge test of all emergency lighting systems must be conducted and certified. This ensures compliance with emergency evacuation requirements.\n\n⚖️ IS 3217:2013+A1:2017, Clause 12.4.3.3 (Ireland); BS 5266-1 (UK)"
+      },
+      {
+        "task_id": "sprinkler_service_certificate",
+        "label": "Annual Sprinkler System Service Certificate",
+        "frequency": "Annually",
+        "category": "Fire",
+        "type": "upload",
+        "needs_report": "yes",
+        "mandatory": true,
+        "points": 20,
+        "info_popup": "Sprinklers must be inspected annually.\n\n⚖️ IS EN 12845:2020"
+      },
+      {
+        "task_id": "dry_riser_test_certificate",
+        "label": "Annual Dry Riser Test Certificate",
+        "frequency": "Annually",
+        "category": "Fire",
+        "type": "upload",
+        "needs_report": "yes",
+        "mandatory": true,
+        "points": 20,
+        "info_popup": "Dry risers must be pressure tested annually.\n\n⚖️ BS 9990:2015"
+      },
+      {
+        "task_id": "ansul_system_check",
+        "label": "Annual Ansul System Certification",
+        "frequency": "Annually",
+        "category": "Fire",
+        "type": "upload",
+        "needs_report": "yes",
+        "mandatory": true,
+        "points": 20,
+        "info_popup": "Ansul kitchen suppression systems require annual service.\n\n⚖️ Manufacturer Spec"
+      },
+      {
+        "task_id": "emergency_light_quarterly_test",
+        "label": "Quarterly Emergency Lighting Function Test",
+        "frequency": "Quarterly",
+        "category": "Fire",
+        "type": "confirmation",
+        "needs_report": "no",
+        "mandatory": false,
+        "points": 10,
+        "info_popup": "Function tests ensure emergency lighting activates correctly during mains power failure. A brief test is required at least every 3 months.\n\n⚖️ IS 3217:2013+A1:2017, Clause 12.4.3.2 (Ireland); BS 5266-1 (UK)"
+      },
+      {
+        "task_id": "fire_register_checks",
+        "label": "Monthly Fire Safety Register – Detailed Checks",
+        "frequency": "Monthly",
+        "category": "Fire",
+        "type": "confirmation",
+        "needs_report": "no",
+        "mandatory": false,
+        "points": 25,
+        "subtasks": [
+          {
+            "label": "AOV Test (Automatic Opening Vent)",
+            "points": 5
+          },
+          {
+            "label": "Refuge Call Point Test",
+            "points": 5
+          },
+          {
+            "label": "Fire Panel Visual Inspection",
+            "points": 5
+          },
+          {
+            "label": "Fire Stopping Visual Check (e.g. risers, corridors)",
+            "points": 5
+          },
+          {
+            "label": "Evacuation Chair Condition Check",
+            "points": 5
+          }
+        ],
+        "info_popup": "This section tracks individual components of the fire safety register. Each item must be visually or functionally checked monthly and logged. AOVs and refuge call points must be tested for function, while fire stopping and evacuation equipment should be inspected for visibility, accessibility, and condition.\n\n⚖️ Based on Fire Services Act 1981 & 2003 (Ireland), IS 3218, and UK Fire Safety Order 2005."
+      },
+      {
+        "task_id": "fire_alarm_zone_test",
+        "label": "Monthly Fire Alarm Zone Test",
+        "frequency": "Monthly",
+        "category": "Fire",
+        "type": "confirmation",
+        "needs_report": "no",
+        "mandatory": false,
+        "points": 10,
+        "info_popup": "Each zone of the fire alarm system must be tested monthly on a rotation to ensure correct function and sounder operation. All zones must be tested within a 3-month period.\n\n⚖️ IS 3218:2013+A1:2019, Clause 9.1.2 (Ireland)"
+      },
+      {
+        "task_id": "fire_door_check",
+        "label": "Monthly Fire Door Visual Check",
+        "frequency": "Monthly",
+        "category": "Fire",
+        "type": "confirmation",
+        "needs_report": "no",
+        "mandatory": false,
+        "points": 10,
+        "info_popup": "All fire doors should be checked monthly for damage, signage, closers, and latching. Regular checks reduce risk of fire spread.\n\n⚖️ Recommended in BS 8214 and UK Fire Safety Order 2005 guidance"
+      },
+      {
+        "task_id": "weekly_fire_alarm_test",
+        "label": "Weekly Fire Alarm Test",
+        "frequency": "Weekly",
+        "category": "Fire",
+        "type": "confirmation",
+        "needs_report": "no",
+        "mandatory": true,
+        "points": 15,
+        "info_popup": "At least one manual call point must be tested weekly to confirm sounders operate correctly. Different call points should be tested in rotation.\n\n⚖️ IS 3218:2013+A1:2019, Clause 9.1.1 (Ireland); BS 5839-1:2017 (UK)"
+      },
+      {
+        "task_id": "fire_warden_training",
+        "label": "Fire Warden Training Records",
+        "frequency": "Annually",
+        "category": "Fire",
+        "type": "upload",
+        "needs_report": "yes",
+        "mandatory": true,
+        "points": 15,
+        "info_popup": "Fire wardens/marshals must be appointed and trained to assist with evacuation and fire safety procedures. Records of training must be maintained.\n\n⚖️ Safety, Health and Welfare at Work Act 2005 (Ireland); Regulatory Reform (Fire Safety) Order 2005 (UK)"
+      },
+      {
+        "task_id": "fire_evacuation_drill",
+        "label": "Fire Evacuation Drill",
+        "frequency": "Twice Annually",
+        "category": "Fire",
+        "type": "confirmation",
+        "needs_report": "yes",
+        "mandatory": true,
+        "points": 15,
+        "info_popup": "Full evacuation drills must be conducted at least twice per year and documented, including evacuation times and any issues identified.\n\n⚖️ Fire Services Act (Ireland); Regulatory Reform (Fire Safety) Order 2005 (UK)"
+      },
+      {
+        "task_id": "fire_evacuation_plan_review",
+        "label": "Fire Evacuation Plan Review",
+        "frequency": "Annually",
+        "category": "Fire",
+        "type": "confirmation",
+        "needs_report": "yes",
+        "mandatory": true,
+        "points": 15,
+        "info_popup": "The fire evacuation plan must be reviewed annually and after any building modifications to ensure it remains current and effective.\n\n⚖️ Fire Services Act (Ireland); Regulatory Reform (Fire Safety) Order 2005 (UK)"
+      },
+      {
+        "task_id": "weekly_emergency_exit_check",
+        "label": "Weekly Emergency Exit Route Check",
+        "frequency": "Weekly",
+        "category": "Fire",
+        "type": "confirmation",
+        "needs_report": "no",
+        "mandatory": true,
+        "points": 15,
+        "info_popup": "All emergency exit routes and doors must be checked weekly to ensure they are unobstructed, unlocked and operational.\n\n⚖️ Fire Services Act 1981 & 2003 (Ireland); Regulatory Reform (Fire Safety) Order 2005 (UK)"
+      }
+    ]
+  },
+  {
+    "section": "Electrical Safety",
+    "tasks": [
+      {
+        "task_id": "eicr_certificate",
+        "label": "Electrical Installation Condition Report (EICR)",
+        "frequency": "Every 5 Years",
+        "category": "Electrical",
+        "type": "upload",
+        "needs_report": "yes",
+        "mandatory": true,
+        "points": 20,
+        "info_popup": "All commercial premises must have their fixed electrical installation tested at least every 5 years by a competent electrician. The resulting EICR must be retained.\n\n⚖️ IS 10101:2020 (Ireland), BS 7671 (UK), Safety, Health and Welfare at Work (General Application) Regulations 2007 (Ireland)"
+      },
+      {
+        "task_id": "pat_testing",
+        "label": "Portable Appliance Testing (PAT)",
+        "frequency": "Annually",
+        "category": "Electrical",
+        "type": "upload",
+        "needs_report": "yes",
+        "mandatory": true,
+        "points": 20,
+        "info_popup": "All portable electrical appliances must be regularly tested for safety. The frequency depends on usage and risk, but annual testing is standard in hospitality.\n\n⚖️ S.I. No. 299/2007 (Ireland); UK PUWER Regulations 1998; IET Code of Practice for In-Service Inspection and Testing of Electrical Equipment"
+      },
+      {
+        "task_id": "thermal_imaging",
+        "label": "Annual Thermal Imaging of Panels (Recommended)",
+        "frequency": "Annually",
+        "category": "Electrical",
+        "type": "upload",
+        "needs_report": "yes",
+        "mandatory": false,
+        "points": 20,
+        "info_popup": "Thermal imaging of distribution boards helps detect overheating, overloading, and potential failures before they occur. Especially useful for larger sites with older infrastructure.\n\n⚖️ Best Practice (Insurer recommended; often part of preventive maintenance)"
+      },
+      {
+        "task_id": "distribution_board_check",
+        "label": "Visual Check of Electrical Distribution Boards",
+        "frequency": "Quarterly",
+        "category": "Electrical",
+        "type": "confirmation",
+        "needs_report": "no",
+        "mandatory": false,
+        "points": 10,
+        "info_popup": "Quarterly inspection of DBs to ensure they are labelled, closed, free from dust/obstruction, and not tampered with. Look for signs of overheating or burning.\n\n⚖️ Best Practice – IS 10101 and PUWER 1998 (UK)"
+      }
+    ]
+  },
+  {
+    "section": "Gas Safety",
+    "tasks": [
+      {
+        "task_id": "gas_safety_certificate",
+        "label": "Annual Gas Safety Certificate",
+        "frequency": "Annually",
+        "category": "Gas",
+        "type": "upload",
+        "needs_report": "yes",
+        "mandatory": true,
+        "points": 20,
+        "info_popup": "Gas-fired systems and appliances must be serviced and tested annually by a registered gas installer. A Gas Safety Certificate must be retained.\n\n⚖️ Gas Safety (Installation and Use) Regulations (UK); Gas Safety (Installation and Use) (Amendment) Regulations 2015 (Ireland)"
+      },
+      {
+        "task_id": "boiler_service",
+        "label": "Boiler Service Report",
+        "frequency": "Annually",
+        "category": "Gas",
+        "type": "upload",
+        "needs_report": "yes",
+        "mandatory": true,
+        "points": 20,
+        "info_popup": "All commercial boilers must be serviced annually to maintain safety and efficiency. This helps prevent breakdowns and carbon monoxide risks.\n\n⚖️ S.I. No. 299/2007; Irish Gas Technical Standards; UK Gas Safety Regs"
+      },
+      {
+        "task_id": "co_alarm_test",
+        "label": "CO Alarm Function Test",
+        "frequency": "Monthly",
+        "category": "Gas",
+        "type": "confirmation",
+        "needs_report": "no",
+        "mandatory": false,
+        "points": 10,
+        "info_popup": "Carbon monoxide detectors must be tested monthly to ensure audible function and visible indicator. Replace batteries as required.\n\n⚖️ Housing Regulations; Best Practice from Fire Services & NSAI"
+      }
+    ]
+  },
+  {
+    "section": "Water Hygiene / Legionella",
+    "tasks": [
+      {
+        "task_id": "legionella_risk_assessment",
+        "label": "Legionella Risk Assessment (Every 2 Years)",
+        "frequency": "Biennially",
+        "category": "Water",
+        "type": "upload",
+        "needs_report": "yes",
+        "mandatory": true,
+        "points": 20,
+        "info_popup": "A Legionella risk assessment must be carried out by a competent party at least every 2 years or when system changes occur. This identifies potential risks in domestic water systems including tanks, calorifiers, and low-use outlets.\n\n⚖️ S.I. No. 299/2007 (Ireland), HSE ACOP L8 (UK), HPSC Legionella Guidance 2011"
+      },
+      {
+        "task_id": "tank_inspection_annual",
+        "label": "Annual Water Tank Inspection",
+        "frequency": "Annually",
+        "category": "Water",
+        "type": "upload",
+        "needs_report": "yes",
+        "mandatory": true,
+        "points": 20,
+        "info_popup": "Cold water storage tanks must be inspected annually to check for debris, corrosion, stagnant water, or ingress risks. Results must be documented.\n\n⚖️ HPSC Legionella Guidance 2011 (Ireland), HSE L8 (UK)"
+      },
+      {
+        "task_id": "tmv_annual_service",
+        "label": "Annual TMV (Thermostatic Mixing Valve) Service",
+        "frequency": "Annually",
+        "category": "Water",
+        "type": "upload",
+        "needs_report": "yes",
+        "mandatory": true,
+        "points": 20,
+        "info_popup": "Service TMVs annually to prevent Legionella.\n\n⚖️ HSG274 Part 2 (UK), ACOP L8"
+      },
+      {
+        "task_id": "quarterly_shower_descaling",
+        "label": "Quarterly Shower Head Cleaning and Descaling",
+        "frequency": "Quarterly",
+        "category": "Water",
+        "type": "confirmation",
+        "needs_report": "no",
+        "mandatory": false,
+        "points": 10,
+        "info_popup": "Showers must be cleaned and descaled quarterly to prevent biofilm and scale buildup which encourages Legionella colonisation. This is critical for guest and staff safety.\n\n⚖️ HPSC Guidelines, HSE L8 (UK), Best Practice"
+      },
+      {
+        "task_id": "monthly_temperature_check",
+        "label": "Monthly Water Temperature Checks",
+        "frequency": "Monthly",
+        "category": "Water",
+        "type": "confirmation",
+        "needs_report": "no",
+        "mandatory": false,
+        "points": 10,
+        "info_popup": "Temperature checks must be performed at representative sentinel points: cold outlets (<20°C), hot outlets (>50°C), and stored water systems. This helps confirm conditions are not favourable for Legionella growth.\n\n⚖️ HPSC Legionella Control Guidance (Ireland), HSE L8 (UK)"
+      },
+      {
+        "task_id": "monthly_calorifier_temperature",
+        "label": "Monthly Calorifier Flow and Return Temperature Check",
+        "frequency": "Monthly",
+        "category": "Water",
+        "type": "confirmation",
+        "needs_report": "no",
+        "mandatory": false,
+        "points": 10,
+        "info_popup": "Monitor the inlet and outlet temperatures of calorifiers monthly. Flow temperature should exceed 60°C and return at least 50°C to ensure Legionella control.\n\n⚖️ HPSC Legionella Control Guidance, HTM 04-01 (UK Healthcare Guidance)"
+      },
+      {
+        "task_id": "weekly_tap_flushing",
+        "label": "Weekly Flushing of Low-Use Taps and Showers",
+        "frequency": "Weekly",
+        "category": "Water",
+        "type": "confirmation",
+        "needs_report": "no",
+        "mandatory": false,
+        "points": 10,
+        "info_popup": "Taps, showers, and outlets that are used less than once a week must be flushed through at least weekly for several minutes. This reduces risk of bacterial growth in stagnant water.\n\n⚖️ HPSC Legionella Control Guidance (Ireland), HSE L8 (UK)"
+      }
+    ]
+  },
+  {
+    "section": "Lifts & Lifting Equipment",
+    "tasks": [
+      {
+        "task_id": "passenger_lift_cert",
+        "label": "Passenger Lift Inspection Certificate (6-Monthly)",
+        "frequency": "Twice Annually",
+        "category": "Lifts",
+        "type": "upload",
+        "needs_report": "yes",
+        "mandatory": true,
+        "points": 20,
+        "info_popup": "Lifts carrying people must be thoroughly examined every 6 months by a competent person. This is a statutory requirement and must be documented.\n\n⚖️ S.I. No. 299/2007 (Ireland); LOLER 1998 (UK); SAFed Guidelines"
+      },
+      {
+        "task_id": "lift_emergency_line_test",
+        "label": "Monthly Lift Emergency Phone Line Test",
+        "frequency": "Monthly",
+        "category": "Lifts",
+        "type": "confirmation",
+        "needs_report": "no",
+        "mandatory": false,
+        "points": 10,
+        "info_popup": "All lifts must have an emergency communication line tested monthly to ensure guests or staff can reach help if trapped.\n\n⚖️ Best Practice; SAFed/LOLER Guidance (UK); Fire Services compliance (Ireland)"
+      }
+    ]
+  },
+  {
+    "section": "Food Safety",
+    "tasks": [
+      {
+        "task_id": "food_handler_training_log",
+        "label": "Food Handler Hygiene Training Certification",
+        "frequency": "Annually",
+        "category": "Food Safety",
+        "type": "upload",
+        "needs_report": "yes",
+        "mandatory": true,
+        "points": 20,
+        "info_popup": "Ensure food hygiene training is in place for all kitchen staff.\n\n⚖️ EC 852/2004, FSAI Training Guidelines"
+      },
+      {
+        "task_id": "pest_control_inspection",
+        "label": "Monthly Pest Control Contractor Inspection",
+        "frequency": "Monthly",
+        "category": "Food Safety",
+        "type": "upload",
+        "needs_report": "yes",
+        "mandatory": true,
+        "points": 20,
+        "info_popup": "Monthly pest inspections in food prep/storage areas.\n\n⚖️ EC 852/2004, FSAI Food Hygiene Guide"
+      },
+      {
+        "task_id": "fridge_temp_log",
+        "label": "Daily Fridge and Freezer Temperature Check",
+        "frequency": "Daily",
+        "category": "Food Safety",
+        "type": "confirmation",
+        "needs_report": "no",
+        "mandatory": true,
+        "points": 20,
+        "info_popup": "Log fridge/freezer temperatures daily.\n\n⚖️ HACCP Requirement (FSAI / EC 852/2004)"
+      }
+    ]
+  },
+  {
+    "section": "Workplace / HR Safety",
+    "tasks": [
+      {
+        "task_id": "safety_statement_review",
+        "label": "Annual Safety Statement Review",
+        "frequency": "Annually",
+        "category": "Health & Safety",
+        "type": "upload",
+        "needs_report": "yes",
+        "mandatory": true,
+        "points": 20,
+        "info_popup": "A written safety statement outlining workplace risks and control measures must be reviewed at least once annually or after significant changes.\n\n⚖️ Safety, Health and Welfare at Work Act 2005 (Ireland)"
+      },
+      {
+        "task_id": "guest_fire_safety_information",
+        "label": "Guest Fire Safety Information Check",
+        "frequency": "Monthly",
+        "category": "Health & Safety",
+        "type": "confirmation",
+        "needs_report": "no",
+        "mandatory": true,
+        "points": 15,
+        "info_popup": "Review and check all guest fire safety information (in rooms, corridors, public areas) to ensure it is present, visible and accurate.\n\n⚖️ Fire Services Act (Ireland); Fire Safety Order 2005 (UK); Section 5.4.6 of UK Hotel Fire Risk Assessment Guide"
+      },
+      {
+        "task_id": "first_aid_certified_staff",
+        "label": "Certified First Aiders On Site",
+        "frequency": "Reviewed Annually",
+        "category": "Health & Safety",
+        "type": "upload",
+        "needs_report": "yes",
+        "mandatory": true,
+        "points": 20,
+        "info_popup": "Ensure first-aid certified staff are always available.\n\n⚖️ HSA (Ireland), HSE First Aid Regs (UK)"
+      },
+      {
+        "task_id": "accident_log_check",
+        "label": "Monthly Accident & Incident Log Review",
+        "frequency": "Monthly",
+        "category": "Health & Safety",
+        "type": "confirmation",
+        "needs_report": "no",
+        "mandatory": false,
+        "points": 10,
+        "info_popup": "Accident and near-miss logs must be reviewed monthly to ensure events are recorded and followed up appropriately. This supports legal traceability.\n\n⚖️ S.I. No. 299/2007; RIDDOR (UK)"
+      },
+      {
+        "task_id": "first_aid_kit_check",
+        "label": "Monthly First Aid Kit Check",
+        "frequency": "Monthly",
+        "category": "Health & Safety",
+        "type": "confirmation",
+        "needs_report": "no",
+        "mandatory": false,
+        "points": 10,
+        "info_popup": "Check that first aid kits are stocked, accessible, and clean. Replenish used items and update expiry-dated products.\n\n⚖️ Code of Practice for Employers (HSA Ireland), Health & Safety First Aid Regs (UK)"
+      }
+    ]
+  }
+]
