@@ -114,3 +114,15 @@ def is_still_valid(frequency: str, report_date: datetime, now: datetime, grace: 
         "Every 5 Years": timedelta(days=5 * 365),
     }.get(frequency, timedelta(days=365))
     return (now - report_date) <= (interval + grace)
+
+def expected_uploads(frequency: str) -> int:
+    return {
+        "Monthly": 12,
+        "Quarterly": 4,
+        "Twice Annually": 2,
+        "Annually": 1,
+        "Biennially": 1,
+        "Every 5 Years": 1,
+        "Reviewed Annually": 1,
+    }.get(frequency, 1)
+
