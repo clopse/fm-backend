@@ -1,5 +1,3 @@
-# /app/main.py
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -18,11 +16,13 @@ from app.routers import (
     files,               # ✅ For service reports
     monthly_checklist,   # ✅ Checklist confirmation API
     due_tasks,           # ✅ "Tasks Due" logic
-    compliance_score     # ✅ NEW: Score calculation endpoint
+    compliance_score,    # ✅ Score calculation
+    compliance_leaderboard  # ✅ NEW: leaderboard route
 )
 
 app = FastAPI()
 
+# Allow frontend connections
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -44,8 +44,10 @@ app.include_router(compliance.router, prefix="/compliance", tags=["compliance"])
 app.include_router(files.router)
 app.include_router(monthly_checklist.router, prefix="/api/compliance", tags=["monthly-checklist"])
 app.include_router(due_tasks.router, prefix="/api/compliance", tags=["due-tasks"])
-app.include_router(compliance_score.router, prefix="/api/compliance", tags=["compliance-score"])  # ✅ NEW
+app.include_router(compliance_score.router, prefix="/api/compliance", tags=["compliance-score"])
+app.include_router(compliance_leaderboard.router, prefix="/api/compliance", tags=["leaderboard"])  # ✅ NEW
 
+# Base routes
 @app.get("/")
 def read_root():
     return {"message": "JMK Project API is running 🚀"}
