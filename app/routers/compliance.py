@@ -7,7 +7,7 @@ import boto3
 
 from app.schemas.common import SuccessResponse
 from app.schemas.safety import SafetyScoreResponse, WeeklyScore
-from utils.compliance_history import add_history_entry
+from app.utils.compliance_history import add_history_entry
 
 load_dotenv()
 
