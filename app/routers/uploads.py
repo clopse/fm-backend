@@ -1,5 +1,5 @@
 from fastapi import APIRouter, UploadFile, Form
-from utils.compliance_history import add_history_entry
+from app.utils.compliance_history import add_history_entry
 from datetime import datetime
 import shutil, os
 
