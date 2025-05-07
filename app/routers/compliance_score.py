@@ -20,85 +20,74 @@ BUCKET = os.getenv("AWS_BUCKET_NAME")
 RULES_PATH = "app/data/compliance.json"
 
 @router.get("/api/compliance/score/{hotel_id}")
-async def get_compliance_score(hotel_id: str):
+def get_compliance_score(hotel_id: str):
+    DATA_PATH = "app/data/compliance.json"
+    grace_period = timedelta(days=30)
+    now = datetime.utcnow()
+    reports_base = f"{hotel_id}/compliance"
+
     try:
-        with open(RULES_PATH, "r") as f:
+        with open(DATA_PATH, "r") as f:
             sections = json.load(f)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not load compliance rules: {e}")
 
-    now = datetime.utcnow()
-    score = 0
-    max_score = 0
-    detailed = []
-    history = {}  # Format: {"2025-01": {"score": x, "max": y}}
+    total_points = 0
+    earned_points = 0
+    breakdown = {}
+    monthly_history = {}
 
     for section in sections:
         for task in section["tasks"]:
-            task_id = task["task_id"]
-            points = task.get("points", 0)
-            freq = task["frequency"].lower()
-            period_days = {
-                "daily": 1,
-                "weekly": 7,
-                "monthly": 30,
-                "quarterly": 90,
-                "twice annually": 180,
-                "annually": 365,
-                "biennially": 730,
-                "every 5 years": 1825
-            }.get(freq, 0)
-
-            if task["type"] == "confirmation":
-                # Future: handle checkbox history here
-                max_score += points
+            if task["type"] != "upload":
                 continue
 
-            prefix = f"{hotel_id}/compliance/{task_id}/"
-            files = []
+            task_id = task["task_id"]
+            points = task.get("points", 20)
+            frequency = task.get("frequency", "Annually")
+
+            total_points += points
+            valid_files = []
+            all_files = []
 
             try:
-                resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=prefix)
+                resp = s3.list_objects_v2(Bucket=os.getenv("AWS_BUCKET_NAME"), Prefix=f"{reports_base}/{task_id}/")
                 for obj in resp.get("Contents", []):
                     if obj["Key"].endswith(".json"):
-                        meta = s3.get_object(Bucket=BUCKET, Key=obj["Key"])
+                        meta = s3.get_object(Bucket=os.getenv("AWS_BUCKET_NAME"), Key=obj["Key"])
                         data = json.loads(meta["Body"].read().decode("utf-8"))
-                        date = datetime.strptime(data["report_date"], "%Y-%m-%d")
-                        files.append(date)
-            except:
-                pass
+                        report_date = datetime.strptime(data["report_date"], "%Y-%m-%d")
+                        all_files.append((report_date, points))
+                        if is_still_valid(frequency, report_date, now, grace_period):
+                            valid_files.append(report_date)
+            except Exception:
+                continue
 
-            files.sort(reverse=True)
+            # Task score logic
+            expected_count = expected_uploads(frequency)
+            actual_count = len(valid_files)
+            if expected_count == 0:
+                task_score = 0
+            elif actual_count >= expected_count:
+                task_score = points
+            else:
+                task_score = round(points * (actual_count / expected_count))
 
-            # Allocate points if report is within valid period (plus 1 month grace)
-            if files:
-                latest = files[0]
-                valid_until = latest + timedelta(days=period_days + 30)
-                if now <= valid_until:
-                    score += points
+            breakdown[task_id] = task_score
+            earned_points += task_score
 
-            max_score += points
-
-            # Monthly breakdown
-            for fdate in files:
-                month_key = fdate.strftime("%Y-%m")
-                if month_key not in history:
-                    history[month_key] = {"score": 0, "max": 0}
-                history[month_key]["score"] += points
-                history[month_key]["max"] += points
-
-            detailed.append({
-                "task_id": task_id,
-                "label": task["label"],
-                "scored": points if files and now <= valid_until else 0,
-                "max": points,
-                "valid_until": valid_until.strftime("%Y-%m-%d") if files else None
-            })
+            # Build monthly history
+            for report_date, pts in all_files:
+                month_key = report_date.strftime("%Y-%m")
+                if month_key not in monthly_history:
+                    monthly_history[month_key] = {"score": 0, "max": 0}
+                monthly_history[month_key]["score"] += pts
+                monthly_history[month_key]["max"] += pts
 
     return {
-        "score": score,
-        "max_score": max_score,
-        "percent": round(score / max_score * 100, 1) if max_score else 0,
-        "detailed": detailed,
-        "monthly_history": history
+        "score": earned_points,
+        "max_score": total_points,
+        "percent": round((earned_points / total_points) * 100, 1) if total_points else 0,
+        "task_breakdown": breakdown,
+        "monthly_history": dict(sorted(monthly_history.items()))
     }
