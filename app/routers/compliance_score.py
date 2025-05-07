@@ -1,4 +1,3 @@
-# /app/routers/compliance_score.py
 from fastapi import APIRouter, HTTPException
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
@@ -91,3 +90,27 @@ def get_compliance_score(hotel_id: str):
         "task_breakdown": breakdown,
         "monthly_history": dict(sorted(monthly_history.items()))
     }
+
+# -------------------------------
+# ✅ Required Helper Functions
+# -------------------------------
+def expected_uploads(frequency: str) -> int:
+    return {
+        "Monthly": 12,
+        "Quarterly": 4,
+        "Twice Annually": 2,
+        "Annually": 1,
+        "Biennially": 1,
+        "Every 5 Years": 1,
+    }.get(frequency, 1)
+
+def is_still_valid(frequency: str, report_date: datetime, now: datetime, grace: timedelta) -> bool:
+    interval = {
+        "Monthly": timedelta(days=30),
+        "Quarterly": timedelta(days=90),
+        "Twice Annually": timedelta(days=180),
+        "Annually": timedelta(days=365),
+        "Biennially": timedelta(days=730),
+        "Every 5 Years": timedelta(days=5 * 365),
+    }.get(frequency, timedelta(days=365))
+    return (now - report_date) <= (interval + grace)
