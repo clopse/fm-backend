@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from datetime import datetime
-from utils.compliance_history import add_history_entry
+from app.utils.compliance_history import add_history_entry
 
 router = APIRouter()
 
