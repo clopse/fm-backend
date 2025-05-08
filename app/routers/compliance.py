@@ -1,15 +1,14 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import os
 import json
 import boto3
 
 from app.utils.compliance_history import add_history_entry
+from .compliance_score import get_compliance_score
 
 load_dotenv()
-
-router = APIRouter()
 
 s3 = boto3.client(
     's3',
@@ -20,8 +19,10 @@ s3 = boto3.client(
 
 BUCKET = os.getenv("AWS_BUCKET_NAME")
 
-# ---------------- Upload File ----------------
-@router.post("/uploads/compliance", response_model=dict)
+router = APIRouter()
+
+
+@router.post("/uploads/compliance")
 async def upload_compliance_doc(
     hotel_id: str = Form(...),
     task_id: str = Form(...),
@@ -38,78 +39,30 @@ async def upload_compliance_doc(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid report_date format. Use YYYY-MM-DD.")
 
+    timestamp = datetime.utcnow()
     report_tag = parsed_date.strftime('%Y%m%d')
-    unique_suffix = datetime.utcnow().strftime('%H%M%S')
+    unique_suffix = timestamp.strftime('%H%M%S')
     safe_filename = file.filename.replace(" ", "_")
     s3_key = f"{hotel_id}/compliance/{task_id}/{report_tag}_{unique_suffix}_{safe_filename}"
     metadata_key = s3_key + ".json"
 
-    try:
-        s3.upload_fileobj(file.file, BUCKET, s3_key)
-        file_url = f"https://{BUCKET}.s3.amazonaws.com/{s3_key}"
-
-        metadata = {
-            "report_date": parsed_date.strftime("%Y-%m-%d"),
-            "uploaded_at": datetime.utcnow().isoformat(),
-            "filename": safe_filename,
-            "fileUrl": file_url,
-        }
-        s3.put_object(Body=json.dumps(metadata, indent=2), Bucket=BUCKET, Key=metadata_key)
-
-        entry = {
-            "fileName": safe_filename,
-            "reportDate": metadata["report_date"],
-            "uploadedAt": metadata["uploaded_at"],
-            "uploadedBy": "SYSTEM",
-            "fileUrl": file_url,
-            "type": "upload"
-        }
-        add_history_entry(hotel_id, task_id, entry)
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error uploading to S3: {str(e)}")
-
-    return {
-        "id": s3_key,
-        "message": "Compliance file uploaded and logged",
-        "fileUrl": file_url
-    }
-
-
-# ---------------- Confirm Task (No File) ----------------
-@router.post("/confirm-task", response_model=dict)
-async def confirm_task(
-    hotel_id: str = Form(...),
-    task_id: str = Form(...),
-    user_email: str = Form(...)
-):
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    timestamp = datetime.utcnow().isoformat()
-    confirm_key = f"{hotel_id}/confirmations/{task_id}/{today}.json"
+    file_url = f"https://{BUCKET}.s3.amazonaws.com/{s3_key}"
 
     metadata = {
-        "report_date": today,
-        "confirmed_by": user_email,
-        "confirmed_at": timestamp,
-        "type": "confirmation"
+        "report_date": parsed_date.strftime("%Y-%m-%d"),
+        "uploaded_at": timestamp.isoformat(),
+        "filename": safe_filename,
+        "fileUrl": file_url,
+        "uploaded_by": "SYSTEM",
+        "approved": False,
+        "type": "upload"
     }
 
     try:
-        s3.put_object(Bucket=BUCKET, Key=confirm_key, Body=json.dumps(metadata, indent=2))
-
-        entry = {
-            "reportDate": today,
-            "uploadedAt": timestamp,
-            "uploadedBy": user_email,
-            "fileUrl": None,
-            "type": "confirmation"
-        }
-        add_history_entry(hotel_id, task_id, entry)
-
+        s3.upload_fileobj(file.file, BUCKET, s3_key)
+        s3.put_object(Bucket=BUCKET, Key=metadata_key, Body=json.dumps(metadata, indent=2))
+        add_history_entry(hotel_id, task_id, metadata)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to confirm task: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Upload error: {str(e)}")
 
-    return {
-        "message": "Task confirmed",
-        "confirmed_at": timestamp
-    }
+    return {"message": "Upload successful", "file": file_url}
