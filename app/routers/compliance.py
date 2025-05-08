@@ -1,17 +1,16 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from datetime import datetime, timedelta
+from datetime import datetime
 from dotenv import load_dotenv
 import os
 import json
 import boto3
 
-from app.schemas.common import SuccessResponse
-from app.schemas.safety import SafetyScoreResponse, WeeklyScore
 from app.utils.compliance_history import add_history_entry
 
 load_dotenv()
 
-# AWS S3 setup
+router = APIRouter()
+
 s3 = boto3.client(
     's3',
     aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
@@ -20,11 +19,8 @@ s3 = boto3.client(
 )
 
 BUCKET = os.getenv("AWS_BUCKET_NAME")
-DATA_PATH = "app/data/compliance.json"
 
-router = APIRouter()
-
-# ---------- Upload Compliance File & Update Score + History ----------
+# ---------------- Upload File ----------------
 @router.post("/uploads/compliance", response_model=dict)
 async def upload_compliance_doc(
     hotel_id: str = Form(...),
@@ -49,7 +45,6 @@ async def upload_compliance_doc(
     metadata_key = s3_key + ".json"
 
     try:
-        # Upload file and metadata to S3
         s3.upload_fileobj(file.file, BUCKET, s3_key)
         file_url = f"https://{BUCKET}.s3.amazonaws.com/{s3_key}"
 
@@ -61,7 +56,6 @@ async def upload_compliance_doc(
         }
         s3.put_object(Body=json.dumps(metadata, indent=2), Bucket=BUCKET, Key=metadata_key)
 
-        # Log to compliance history
         entry = {
             "fileName": safe_filename,
             "reportDate": metadata["report_date"],
@@ -75,46 +69,47 @@ async def upload_compliance_doc(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error uploading to S3: {str(e)}")
 
-    # Recalculate compliance score
-    from .compliance_score import get_compliance_score
-    updated_score = get_compliance_score(hotel_id)
-
-    # Save this month's snapshot
-    now_month = datetime.utcnow().strftime("%Y-%m")
-    try:
-        if updated_score.get("monthly_history"):
-            this_month = updated_score["monthly_history"].get(now_month)
-            if this_month:
-                month_key = f"{hotel_id}/compliance/monthly/{now_month}.json"
-                s3.put_object(
-                    Body=json.dumps(this_month, indent=2),
-                    Bucket=BUCKET,
-                    Key=month_key
-                )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save monthly snapshot: {str(e)}")
-
-    # Save latest.json snapshot
-    try:
-        latest_score = {
-            "score": updated_score["score"],
-            "max_score": updated_score["max_score"],
-            "percent": updated_score["percent"],
-            "timestamp": datetime.utcnow().isoformat(),
-            "month": now_month,
-            "task_breakdown": updated_score.get("task_breakdown", {})
-        }
-        latest_key = f"{hotel_id}/compliance/latest.json"
-        s3.put_object(
-            Body=json.dumps(latest_score, indent=2),
-            Bucket=BUCKET,
-            Key=latest_key
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save latest.json: {str(e)}")
-
     return {
         "id": s3_key,
-        "message": "Compliance file uploaded and history saved",
-        "score": updated_score
+        "message": "Compliance file uploaded and logged",
+        "fileUrl": file_url
+    }
+
+
+# ---------------- Confirm Task (No File) ----------------
+@router.post("/confirm-task", response_model=dict)
+async def confirm_task(
+    hotel_id: str = Form(...),
+    task_id: str = Form(...),
+    user_email: str = Form(...)
+):
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    timestamp = datetime.utcnow().isoformat()
+    confirm_key = f"{hotel_id}/confirmations/{task_id}/{today}.json"
+
+    metadata = {
+        "report_date": today,
+        "confirmed_by": user_email,
+        "confirmed_at": timestamp,
+        "type": "confirmation"
+    }
+
+    try:
+        s3.put_object(Bucket=BUCKET, Key=confirm_key, Body=json.dumps(metadata, indent=2))
+
+        entry = {
+            "reportDate": today,
+            "uploadedAt": timestamp,
+            "uploadedBy": user_email,
+            "fileUrl": None,
+            "type": "confirmation"
+        }
+        add_history_entry(hotel_id, task_id, entry)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to confirm task: {str(e)}")
+
+    return {
+        "message": "Task confirmed",
+        "confirmed_at": timestamp
     }
