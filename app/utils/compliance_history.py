@@ -1,6 +1,7 @@
 import json
 import boto3
 from datetime import datetime
+from botocore.exceptions import ClientError
 
 s3 = boto3.client('s3')
 BUCKET_NAME = 'jmk-project-uploads'
@@ -13,10 +14,13 @@ def load_compliance_history(hotel_id: str) -> dict:
     try:
         obj = s3.get_object(Bucket=BUCKET_NAME, Key=key)
         return json.loads(obj['Body'].read().decode('utf-8'))
-    except s3.exceptions.NoSuchKey:
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'NoSuchKey':
+            return {}
+        print(f"[ERROR] Failed to load compliance history for {hotel_id}: {e}")
         return {}
     except Exception as e:
-        print(f"[ERROR] Failed to load compliance history for {hotel_id}: {e}")
+        print(f"[ERROR] Unexpected error loading history for {hotel_id}: {e}")
         return {}
 
 def save_compliance_history(hotel_id: str, history: dict):
@@ -35,8 +39,15 @@ def add_history_entry(hotel_id: str, task_id: str, entry: dict):
     history = load_compliance_history(hotel_id)
     if task_id not in history:
         history[task_id] = []
+
+    # Auto-add timestamp if missing
+    if "loggedAt" not in entry:
+        entry["loggedAt"] = datetime.utcnow().isoformat()
+
+    # Insert at top, keep max 4
     history[task_id].insert(0, entry)
-    history[task_id] = history[task_id][:4]  # Keep max 4 entries
+    history[task_id] = history[task_id][:4]
+
     save_compliance_history(hotel_id, history)
 
 def delete_history_entry(hotel_id: str, task_id: str, timestamp: str):
@@ -44,6 +55,6 @@ def delete_history_entry(hotel_id: str, task_id: str, timestamp: str):
     if task_id in history:
         history[task_id] = [
             e for e in history[task_id]
-            if e.get('uploadedAt') != timestamp and e.get('confirmedAt') != timestamp
+            if e.get('uploadedAt') != timestamp and e.get('confirmedAt') != timestamp and e.get('loggedAt') != timestamp
         ]
         save_compliance_history(hotel_id, history)
