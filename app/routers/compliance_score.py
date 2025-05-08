@@ -90,10 +90,10 @@ def get_compliance_score(hotel_id: str):
                 except Exception:
                     pass
 
-                mkey = now.strftime("%Y-%m")
-                if latest and latest.strftime("%Y-%m") == mkey:
+                if latest and is_still_valid(frequency, latest, now, grace_period):
                     earned_points += points
                     breakdown[task_id] = points
+                    mkey = latest.strftime("%Y-%m")
                     if mkey not in monthly_history:
                         monthly_history[mkey] = {"score": 0, "max": 0}
                     monthly_history[mkey]["score"] += points
