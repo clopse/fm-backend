@@ -23,7 +23,6 @@ RULES_PATH = "app/data/compliance.json"
 def get_compliance_score(hotel_id: str):
     grace_period = timedelta(days=30)
     now = datetime.utcnow()
-    reports_base = f"{hotel_id}/compliance"
 
     try:
         with open(RULES_PATH, "r") as f:
@@ -38,48 +37,69 @@ def get_compliance_score(hotel_id: str):
 
     for section in sections:
         for task in section["tasks"]:
-            if task["type"] != "upload":
-                continue
-
             task_id = task["task_id"]
-            points = task.get("points", 20)
+            task_type = task.get("type", "upload")
             frequency = task.get("frequency", "Annually")
-
+            points = task.get("points", 20)
             total_points += points
-            valid_files = []
-            all_files = []
 
-            try:
-                resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=f"{reports_base}/{task_id}/")
-                for obj in resp.get("Contents", []):
-                    if obj["Key"].endswith(".json"):
-                        meta = s3.get_object(Bucket=BUCKET, Key=obj["Key"])
-                        data = json.loads(meta["Body"].read().decode("utf-8"))
-                        report_date = datetime.strptime(data["report_date"], "%Y-%m-%d")
-                        all_files.append((report_date, points))
-                        if is_still_valid(frequency, report_date, now, grace_period):
-                            valid_files.append(report_date)
-            except Exception:
-                continue
+            if task_type == "upload":
+                valid_files = []
+                all_files = []
+                try:
+                    prefix = f"{hotel_id}/compliance/{task_id}/"
+                    resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=prefix)
+                    for obj in resp.get("Contents", []):
+                        if obj["Key"].endswith(".json"):
+                            meta = s3.get_object(Bucket=BUCKET, Key=obj["Key"])
+                            data = json.loads(meta["Body"].read().decode("utf-8"))
+                            report_date = datetime.strptime(data["report_date"], "%Y-%m-%d")
+                            all_files.append((report_date, points))
+                            if is_still_valid(frequency, report_date, now, grace_period):
+                                valid_files.append(report_date)
+                except Exception:
+                    pass
 
-            expected_count = expected_uploads(frequency)
-            actual_count = len(valid_files)
-            if expected_count == 0:
-                task_score = 0
-            elif actual_count >= expected_count:
-                task_score = points
-            else:
-                task_score = round(points * (actual_count / expected_count))
+                expected_count = expected_uploads(frequency)
+                actual_count = len(valid_files)
+                score = round(points * (actual_count / expected_count)) if expected_count else 0
+                score = min(score, points)
 
-            breakdown[task_id] = task_score
-            earned_points += task_score
+                earned_points += score
+                breakdown[task_id] = score
 
-            for report_date, pts in all_files:
-                month_key = report_date.strftime("%Y-%m")
-                if month_key not in monthly_history:
-                    monthly_history[month_key] = {"score": 0, "max": 0}
-                monthly_history[month_key]["score"] += pts
-                monthly_history[month_key]["max"] += pts
+                for report_date, pts in all_files:
+                    mkey = report_date.strftime("%Y-%m")
+                    if mkey not in monthly_history:
+                        monthly_history[mkey] = {"score": 0, "max": 0}
+                    monthly_history[mkey]["score"] += pts
+                    monthly_history[mkey]["max"] += pts
+
+            elif task_type == "confirmation":
+                latest = None
+                try:
+                    prefix = f"{hotel_id}/confirmations/{task_id}/"
+                    resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=prefix)
+                    for obj in resp.get("Contents", []):
+                        if obj["Key"].endswith(".json"):
+                            meta = s3.get_object(Bucket=BUCKET, Key=obj["Key"])
+                            data = json.loads(meta["Body"].read().decode("utf-8"))
+                            report_date = datetime.strptime(data["report_date"], "%Y-%m-%d")
+                            if not latest or report_date > latest:
+                                latest = report_date
+                except Exception:
+                    pass
+
+                mkey = now.strftime("%Y-%m")
+                if latest and latest.strftime("%Y-%m") == mkey:
+                    earned_points += points
+                    breakdown[task_id] = points
+                    if mkey not in monthly_history:
+                        monthly_history[mkey] = {"score": 0, "max": 0}
+                    monthly_history[mkey]["score"] += points
+                    monthly_history[mkey]["max"] += points
+                else:
+                    breakdown[task_id] = 0
 
     return {
         "score": earned_points,
@@ -90,7 +110,8 @@ def get_compliance_score(hotel_id: str):
     }
 
 
-# ---------- Helpers ----------
+# --- Helpers ---
+
 def expected_uploads(frequency: str) -> int:
     return {
         "Monthly": 12,
