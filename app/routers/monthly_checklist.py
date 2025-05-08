@@ -14,11 +14,10 @@ s3 = boto3.client(
 )
 
 BUCKET = os.getenv("AWS_BUCKET_NAME")
-CONFIRM_PREFIX = "confirmations"  # confirmations/{hotel_id}/{task_id}/{YYYY-MM}.json
+CONFIRM_PREFIX = "confirmations"
 RULES_PATH = "app/data/compliance.json"
 
 
-# ✅ Get monthly confirmation checklist
 @router.get("/monthly-checklist/{hotel_id}")
 def get_monthly_checklist(hotel_id: str):
     now = datetime.utcnow()
@@ -36,6 +35,7 @@ def get_monthly_checklist(hotel_id: str):
             if task.get("type") == "confirmation" and task.get("needs_report") == "no":
                 task_id = task["task_id"]
                 key = f"{CONFIRM_PREFIX}/{hotel_id}/{task_id}/{year_month}.json"
+
                 is_confirmed = False
                 last_date = None
 
@@ -45,23 +45,23 @@ def get_monthly_checklist(hotel_id: str):
                     last_date = data.get("confirmed_at")
                     is_confirmed = last_date is not None
                 except Exception:
-                    pass  # Treat as not confirmed
+                    pass
 
-                results.append({
-                    "task_id": task_id,
-                    "label": task.get("label", ""),
-                    "frequency": task.get("frequency", ""),
-                    "category": task.get("category", ""),
-                    "points": task.get("points", 0),
-                    "info_popup": task.get("info_popup", ""),
-                    "last_confirmed_date": last_date,
-                    "is_confirmed_this_month": is_confirmed
-                })
+                if not is_confirmed:
+                    results.append({
+                        "task_id": task_id,
+                        "label": task.get("label", ""),
+                        "frequency": task.get("frequency", ""),
+                        "category": task.get("category", ""),
+                        "points": task.get("points", 0),
+                        "info_popup": task.get("info_popup", ""),
+                        "last_confirmed_date": last_date,
+                        "is_confirmed_this_month": is_confirmed
+                    })
 
     return results
 
 
-# ✅ Post confirmation for a task this month
 @router.post("/confirm-task")
 def confirm_task(data: dict = Body(...)):
     hotel_id = data.get("hotel_id")
