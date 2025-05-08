@@ -1,13 +1,10 @@
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
 import os
 import json
 import boto3
 
 router = APIRouter()
-load_dotenv()
 
 s3 = boto3.client(
     's3',
@@ -20,31 +17,13 @@ RULES_PATH = "app/data/compliance.json"
 BUCKET = os.getenv("AWS_BUCKET_NAME")
 
 
-# === Acknowledge next month's task ===
-class AcknowledgePayload(BaseModel):
-    hotel_id: str
-    task_id: str
-
-@router.post("/acknowledge-task")
-async def acknowledge_task(payload: AcknowledgePayload):
-    now = datetime.utcnow()
-    key = f"{payload.hotel_id}/acknowledged/{payload.task_id}-{now.strftime('%Y-%m')}.json"
-    body = json.dumps({"acknowledged_at": now.isoformat()})
-
-    try:
-        s3.put_object(Bucket=BUCKET, Key=key, Body=body)
-        return {"message": "Task acknowledged successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Could not save acknowledgment: {e}")
-
-
-# === Get due and next-month tasks ===
 @router.get("/due-tasks/{hotel_id}")
 async def get_due_tasks(hotel_id: str):
     now = datetime.utcnow()
     month_start = now.replace(day=1)
     next_month = (month_start + timedelta(days=32)).replace(day=1)
     next_month_end = (next_month + timedelta(days=32)).replace(day=1)
+    year_month = now.strftime("%Y-%m")
 
     try:
         with open(RULES_PATH, "r") as f:
@@ -57,53 +36,57 @@ async def get_due_tasks(hotel_id: str):
 
     for section in sections:
         for task in section["tasks"]:
-            if task["type"] != "upload":
-                continue
+            task_id = task["task_id"]
+            frequency = task.get("frequency", "").lower()
+            task_type = task.get("type", "upload")
 
-            freq = task["frequency"].lower()
-            period = {
+            interval = {
                 "monthly": 30,
                 "quarterly": 90,
                 "twice annually": 180,
                 "annually": 365,
                 "biennially": 730,
                 "every 5 years": 1825
-            }.get(freq, 0)
+            }.get(frequency, 0)
 
-            if not period:
+            if interval == 0:
                 continue
 
-            task_id = task["task_id"]
-            prefix = f"{hotel_id}/compliance/{task_id}/"
-            latest = None
+            if task_type == "upload":
+                latest = None
+                prefix = f"{hotel_id}/compliance/{task_id}/"
+                try:
+                    resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=prefix)
+                    for obj in resp.get("Contents", []):
+                        if obj["Key"].endswith(".json"):
+                            metadata = s3.get_object(Bucket=BUCKET, Key=obj["Key"])
+                            data = json.loads(metadata["Body"].read().decode("utf-8"))
+                            report_date = datetime.strptime(data["report_date"], "%Y-%m-%d")
+                            if not latest or report_date > latest:
+                                latest = report_date
+                except Exception:
+                    pass
 
-            try:
-                resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=prefix)
-                for obj in resp.get("Contents", []):
-                    if obj["Key"].endswith(".json"):
-                        metadata = s3.get_object(Bucket=BUCKET, Key=obj["Key"])
-                        data = json.loads(metadata["Body"].read().decode("utf-8"))
-                        report_date = datetime.strptime(data["report_date"], "%Y-%m-%d")
-                        if not latest or report_date > latest:
-                            latest = report_date
-            except Exception:
-                pass
+                next_due = (latest + timedelta(days=interval)) if latest else datetime.min
+                ack_key = f"{hotel_id}/acknowledged/{task_id}-{next_month.strftime('%Y-%m')}.json"
+                is_acknowledged = False
+                try:
+                    s3.head_object(Bucket=BUCKET, Key=ack_key)
+                    is_acknowledged = True
+                except:
+                    pass
 
-            next_due = (latest + timedelta(days=period)) if latest else datetime.min
+                if month_start <= next_due < next_month:
+                    due_this_month.append(task)
+                elif next_month <= next_due < next_month_end and not is_acknowledged:
+                    next_month_due.append(task)
 
-            # Check if task is acknowledged (ignored) for next month
-            ack_key = f"{hotel_id}/acknowledged/{task_id}-{next_month.strftime('%Y-%m')}.json"
-            is_acknowledged = False
-            try:
-                s3.head_object(Bucket=BUCKET, Key=ack_key)
-                is_acknowledged = True
-            except:
-                pass
-
-            if month_start <= next_due < next_month:
-                due_this_month.append(task)
-            elif next_month <= next_due < next_month_end and not is_acknowledged:
-                next_month_due.append(task)
+            elif task_type == "confirmation":
+                key = f"confirmations/{hotel_id}/{task_id}/{year_month}.json"
+                try:
+                    s3.get_object(Bucket=BUCKET, Key=key)
+                except Exception:
+                    due_this_month.append(task)
 
     return {
         "due_this_month": due_this_month,
