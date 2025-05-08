@@ -79,7 +79,8 @@ def confirm_task(data: dict = Body(...)):
         "hotel_id": hotel_id,
         "task_id": task_id,
         "confirmed_by": user_email,
-        "confirmed_at": now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        "confirmed_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "report_date": now.strftime("%Y-%m-%d")
     }
 
     try:
