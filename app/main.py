@@ -13,12 +13,13 @@ from app.routers import (
     drawings,
     tenders,
     compliance,
-    files,               # ✅ For service reports
-    monthly_checklist,   # ✅ Checklist confirmation API
-    due_tasks,           # ✅ "Tasks Due" logic
-    compliance_score,    # ✅ Score calculation
-    compliance_leaderboard,  # ✅ NEW: leaderboard route
-    confirmations        # ✅ NEW: for confirmation-only compliance tasks
+    files,                   # ✅ Service reports
+    monthly_checklist,       # ✅ Checklist confirmation
+    due_tasks,               # ✅ Tasks due logic
+    compliance_score,        # ✅ Score calculation
+    compliance_leaderboard,  # ✅ Leaderboard
+    confirmations,           # ✅ Confirmation-only tasks
+    compliance_history       # ✅ NEW: Full compliance history per hotel
 )
 
 app = FastAPI()
@@ -37,7 +38,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include Routers
+# Include all routers
 app.include_router(utilities.router)
 app.include_router(tenders.router)
 app.include_router(drawings.router)
@@ -47,7 +48,8 @@ app.include_router(monthly_checklist.router, prefix="/api/compliance", tags=["mo
 app.include_router(due_tasks.router, prefix="/api/compliance", tags=["due-tasks"])
 app.include_router(compliance_score.router, prefix="/api/compliance", tags=["compliance-score"])
 app.include_router(compliance_leaderboard.router, prefix="/api/compliance", tags=["leaderboard"])
-app.include_router(confirmations.router, prefix="/api/compliance", tags=["confirmations"])  # ✅ NEW
+app.include_router(confirmations.router, prefix="/api/compliance", tags=["confirmations"])
+app.include_router(compliance_history.router, prefix="/api/compliance", tags=["compliance-history"])  # ✅ NEW
 
 # Base routes
 @app.get("/")
