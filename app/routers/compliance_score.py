@@ -104,7 +104,7 @@ def get_compliance_score(hotel_id: str):
                 else:
                     breakdown[task_id] = 0
 
-    final_result = {
+    result = {
         "score": earned_points,
         "max_score": total_points,
         "percent": round((earned_points / total_points) * 100, 1) if total_points else 0,
@@ -112,19 +112,19 @@ def get_compliance_score(hotel_id: str):
         "monthly_history": dict(sorted(monthly_history.items()))
     }
 
-    # Save to S3 as latest.json
+    # Save to latest.json
     try:
-        key = f"{hotel_id}/compliance/latest.json"
+        latest_key = f"{hotel_id}/compliance/latest.json"
         s3.put_object(
             Bucket=BUCKET,
-            Key=key,
-            Body=json.dumps(final_result, indent=2),
+            Key=latest_key,
+            Body=json.dumps(result, indent=2),
             ContentType="application/json"
         )
     except Exception as e:
         print(f"[WARN] Could not write latest.json for {hotel_id}: {e}")
 
-    return final_result
+    return result
 
 
 # --- Helpers ---
@@ -139,6 +139,7 @@ def expected_uploads(frequency: str) -> int:
         "Every 5 Years": 1,
         "Reviewed Annually": 1,
     }.get(frequency, 1)
+
 
 def is_still_valid(frequency: str, report_date: datetime, now: datetime, grace: timedelta) -> bool:
     interval = {
