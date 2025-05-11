@@ -29,27 +29,25 @@ HOTELS = [
     { "id": "belfast", "name": "Hamilton Dock" }
 ]
 
+from app.routers.compliance_score import get_compliance_score  # Import the real score function
+
 @router.get("/leaderboard")
 def get_compliance_leaderboard():
     results = []
 
     for hotel in HOTELS:
-        hotel_id = hotel["id"]
-        key = f"{hotel_id}/compliance/latest.json"
-
         try:
-            obj = s3.get_object(Bucket=BUCKET, Key=key)
-            data = json.loads(obj["Body"].read().decode("utf-8"))
-            percent = data.get("percent", 0)
+            score_data = get_compliance_score(hotel["id"])  # ⬅️ Calls the actual logic
             results.append({
-                "hotel": hotel_id,
-                "score": round(percent)
+                "hotel": hotel["id"],
+                "score": round(score_data["percent"])
             })
         except Exception as e:
-            print(f"[WARN] Failed to load leaderboard data for {hotel_id}: {e}")
+            print(f"[WARN] Failed to compute score for {hotel['id']}: {e}")
             results.append({
-                "hotel": hotel_id,
+                "hotel": hotel["id"],
                 "score": 0
             })
 
     return results
+
