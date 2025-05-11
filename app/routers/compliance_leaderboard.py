@@ -7,16 +7,16 @@ import json
 router = APIRouter()
 load_dotenv()
 
+# Initialize AWS S3 client
 s3 = boto3.client(
     "s3",
     aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
     aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
-    region_name=os.getenv("AWS_REGION"),
+    region_name=os.getenv("AWS_REGION")
 )
 
 BUCKET = os.getenv("AWS_BUCKET_NAME")
 
-# Match your frontend hotel list
 HOTELS = [
     { "id": "hiex", "name": "Holiday Inn Express" },
     { "id": "moxy", "name": "Moxy Cork" },
@@ -29,7 +29,7 @@ HOTELS = [
     { "id": "belfast", "name": "Hamilton Dock" }
 ]
 
-@router.get("/api/compliance/leaderboard")
+@router.get("/leaderboard")
 def get_compliance_leaderboard():
     results = []
 
@@ -39,16 +39,14 @@ def get_compliance_leaderboard():
 
         try:
             obj = s3.get_object(Bucket=BUCKET, Key=key)
-            raw = obj["Body"].read().decode("utf-8")
-            data = json.loads(raw)
-
-            percent = data["percent"] if isinstance(data, dict) and "percent" in data else 0
+            data = json.loads(obj["Body"].read().decode("utf-8"))
+            percent = data.get("percent", 0)
             results.append({
-                "hotel": hotel_id,  # use ID for frontend mapping/icons
+                "hotel": hotel_id,
                 "score": round(percent)
             })
         except Exception as e:
-            print(f"[WARN] Could not fetch {key}: {e}")
+            print(f"[WARN] Failed to load leaderboard data for {hotel_id}: {e}")
             results.append({
                 "hotel": hotel_id,
                 "score": 0
