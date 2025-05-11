@@ -18,6 +18,7 @@ s3 = boto3.client(
 BUCKET = os.getenv("AWS_BUCKET_NAME")
 RULES_PATH = "app/data/compliance.json"
 
+
 @router.get("/score/{hotel_id}")
 def get_compliance_score(hotel_id: str):
     grace_period = timedelta(days=30)
@@ -77,19 +78,16 @@ def get_compliance_score(hotel_id: str):
             elif task_type == "confirmation":
                 latest = None
                 try:
-                    prefix = f"{hotel_id}/confirmations/{task_id}/"
+                    prefix = f"{hotel_id}/compliance/confirmations/{task_id}/"
                     resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=prefix)
                     for obj in resp.get("Contents", []):
                         if obj["Key"].endswith(".json"):
                             meta = s3.get_object(Bucket=BUCKET, Key=obj["Key"])
                             data = json.loads(meta["Body"].read().decode("utf-8"))
-
-                            # Use either report_date or confirmed_at
                             date_str = data.get("report_date") or data.get("confirmed_at")
                             if not date_str:
                                 continue
                             report_date = datetime.strptime(date_str[:10], "%Y-%m-%d")
-
                             if not latest or report_date > latest:
                                 latest = report_date
                 except Exception:
@@ -127,6 +125,7 @@ def expected_uploads(frequency: str) -> int:
         "Every 5 Years": 1,
         "Reviewed Annually": 1,
     }.get(frequency, 1)
+
 
 def is_still_valid(frequency: str, report_date: datetime, now: datetime, grace: timedelta) -> bool:
     interval = {
