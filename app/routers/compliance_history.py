@@ -8,8 +8,9 @@ router = APIRouter()
 s3 = boto3.client("s3")
 BUCKET_NAME = "jmk-project-uploads"
 
+# ✅ NEW PATH STRUCTURE
 def _get_history_key(hotel_id: str) -> str:
-    return f"logs/compliance-history/{hotel_id}.json"
+    return f"{hotel_id}/logs/compliance-history.json"
 
 def load_compliance_history(hotel_id: str) -> dict:
     key = _get_history_key(hotel_id)
@@ -39,7 +40,7 @@ def add_history_entry(hotel_id: str, task_id: str, entry: dict):
     if task_id not in history:
         history[task_id] = []
     history[task_id].insert(0, entry)
-    history[task_id] = history[task_id][:10]  # Store only the latest 10
+    history[task_id] = history[task_id][:10]  # Limit to 10 latest entries per task
     save_compliance_history(hotel_id, history)
 
 def delete_history_entry(hotel_id: str, task_id: str, timestamp: str):
@@ -52,7 +53,6 @@ def delete_history_entry(hotel_id: str, task_id: str, timestamp: str):
         save_compliance_history(hotel_id, history)
 
 # ====== API ROUTE ======
-
 @router.get("/history/{hotel_id}")
 async def get_compliance_history(hotel_id: str):
     try:
