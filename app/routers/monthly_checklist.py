@@ -14,7 +14,6 @@ s3 = boto3.client(
 )
 
 BUCKET = os.getenv("AWS_BUCKET_NAME")
-CONFIRM_PREFIX = "confirmations"
 RULES_PATH = "app/data/compliance.json"
 
 
@@ -34,7 +33,7 @@ def get_monthly_checklist(hotel_id: str):
         for task in section["tasks"]:
             if task.get("type") == "confirmation" and task.get("needs_report") == "no":
                 task_id = task["task_id"]
-                key = f"{CONFIRM_PREFIX}/{hotel_id}/{task_id}/{year_month}.json"
+                key = f"{hotel_id}/compliance/confirmations/{task_id}/{year_month}.json"
 
                 is_confirmed = False
                 last_date = None
@@ -73,7 +72,7 @@ def confirm_task(data: dict = Body(...)):
 
     now = datetime.utcnow()
     year_month = now.strftime("%Y-%m")
-    key = f"{CONFIRM_PREFIX}/{hotel_id}/{task_id}/{year_month}.json"
+    key = f"{hotel_id}/compliance/confirmations/{task_id}/{year_month}.json"
 
     record = {
         "hotel_id": hotel_id,
