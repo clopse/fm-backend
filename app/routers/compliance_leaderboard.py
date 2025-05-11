@@ -35,19 +35,22 @@ def get_compliance_leaderboard():
 
     for hotel in HOTELS:
         hotel_id = hotel["id"]
-        hotel_name = hotel["name"]
         key = f"{hotel_id}/compliance/latest.json"
 
         try:
             obj = s3.get_object(Bucket=BUCKET, Key=key)
-            data = json.loads(obj["Body"].read().decode("utf-8"))
+            raw = obj["Body"].read().decode("utf-8")
+            data = json.loads(raw)
+
+            percent = data["percent"] if isinstance(data, dict) and "percent" in data else 0
             results.append({
-                "hotel": hotel_name,
-                "score": round(data.get("percent", 0))
+                "hotel": hotel_id,  # use ID for frontend mapping/icons
+                "score": round(percent)
             })
-        except Exception:
+        except Exception as e:
+            print(f"[WARN] Could not fetch {key}: {e}")
             results.append({
-                "hotel": hotel_name,
+                "hotel": hotel_id,
                 "score": 0
             })
 
