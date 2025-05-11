@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from dotenv import load_dotenv
 import boto3
 import os
@@ -7,16 +7,16 @@ import json
 router = APIRouter()
 load_dotenv()
 
-# Initialize AWS S3 client
+# AWS S3 setup
 s3 = boto3.client(
     "s3",
     aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
     aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
     region_name=os.getenv("AWS_REGION")
 )
-
 BUCKET = os.getenv("AWS_BUCKET_NAME")
 
+# Hotel list for leaderboard
 HOTELS = [
     { "id": "hiex", "name": "Holiday Inn Express" },
     { "id": "moxy", "name": "Moxy Cork" },
@@ -29,25 +29,28 @@ HOTELS = [
     { "id": "belfast", "name": "Hamilton Dock" }
 ]
 
-from app.routers.compliance_score import get_compliance_score  # Import the real score function
-
 @router.get("/leaderboard")
 def get_compliance_leaderboard():
     results = []
 
     for hotel in HOTELS:
+        hotel_id = hotel["id"]
+        key = f"{hotel_id}/compliance/latest.json"
+
         try:
-            score_data = get_compliance_score(hotel["id"])  # ⬅️ Calls the actual logic
+            obj = s3.get_object(Bucket=BUCKET, Key=key)
+            data = json.loads(obj["Body"].read().decode("utf-8"))
+            score = round(data.get("percent", 0))
+
             results.append({
-                "hotel": hotel["id"],
-                "score": round(score_data["percent"])
+                "hotel": hotel_id,
+                "score": score
             })
         except Exception as e:
-            print(f"[WARN] Failed to compute score for {hotel['id']}: {e}")
+            print(f"[WARN] Could not read {key}: {e}")
             results.append({
-                "hotel": hotel["id"],
+                "hotel": hotel_id,
                 "score": 0
             })
 
     return results
-
