@@ -9,96 +9,97 @@ s3 = boto3.client("s3")
 
 @router.get("/history/all")
 def get_all_compliance_history():
-    prefix = "logs/compliance-history/"
     all_entries = []
-    debug_info = {
-        "bucket": BUCKET,
-        "prefix": prefix,
-        "s3_files_found": [],
-        "errors": []
-    }
-    
     try:
-        # List objects in the bucket with the given prefix
-        response = s3.list_objects_v2(Bucket=BUCKET, Prefix=prefix)
-        
-        # Check if there are any files
-        contents = response.get("Contents", [])
-        if not contents:
-            return {
-                "entries": [],
-                "debug": {
-                    **debug_info,
-                    "message": "No files found in S3 bucket with the given prefix"
-                }
-            }
-        
-        # Log all files found
-        for obj in contents:
-            key = obj["Key"]
-            debug_info["s3_files_found"].append({
-                "key": key,
-                "size": obj.get("Size", 0),
-                "last_modified": str(obj.get("LastModified", ""))
-            })
+        # Read the specific file we know exists
+        key = "logs/compliance-history/hiex.json"
+        try:
+            history_obj = s3.get_object(Bucket=BUCKET, Key=key)
+            history_data = json.loads(history_obj["Body"].read())
             
-            if not key.endswith(".json"):
-                continue
-                
-            hotel_id = key.split("/")[-1].replace(".json", "")
+            hotel_id = "hiex"  # Hardcoded for now since we know the file name
             
-            try:
-                # Get the object content
-                history_obj = s3.get_object(Bucket=BUCKET, Key=key)
-                history_data = json.loads(history_obj["Body"].read())
-                
-                # Log the content structure
-                debug_info[f"file_content_{key}"] = {
-                    "keys": list(history_data.keys()),
-                    "entry_count": sum(len(records) for records in history_data.values() if isinstance(records, list))
-                }
-                
-                # Extract entries
-                for task_id, records in history_data.items():
-                    if not isinstance(records, list):
-                        debug_info["errors"].append(f"Records for task {task_id} in {key} is not a list")
-                        continue
-                        
-                    for entry in records:
-                        all_entries.append({
-                            "hotel_id": hotel_id,
-                            "task_id": task_id,
-                            **entry
-                        })
-            except Exception as e:
-                error_msg = f"Error processing file {key}: {str(e)}"
-                debug_info["errors"].append(error_msg)
-                continue
+            for task_id, records in history_data.items():
+                if not isinstance(records, list):
+                    continue
+                    
+                for entry in records:
+                    all_entries.append({
+                        "hotel_id": hotel_id,
+                        "task_id": task_id,
+                        **entry  # Include all fields from the entry
+                    })
+                    
+        except s3.exceptions.NoSuchKey:
+            print(f"File {key} not found in bucket {BUCKET}")
+            pass  # Skip if file doesn't exist
+        except Exception as e:
+            print(f"Error processing file {key}: {str(e)}")
+            pass  # Skip if there's an error
         
         # Safe sorting
         def safe_sort_key(entry):
+            # Try multiple date fields that might be in the data
             for field in ["loggedAt", "uploaded_at", "confirmedAt"]:
                 if entry.get(field):
                     return entry.get(field)
             return ""
             
-        sorted_entries = sorted(all_entries, key=safe_sort_key, reverse=True)
-        
-        # Return the entries along with debug info
-        return {
-            "entries": sorted_entries,
-            "debug": debug_info
-        }
+        return {"entries": sorted(all_entries, key=safe_sort_key, reverse=True)}
     except Exception as e:
         import traceback
         error_detail = str(e)
         tb = traceback.format_exc()
-        debug_info["errors"].append(error_detail)
-        debug_info["traceback"] = tb
-        
         print(f"Error in compliance history: {error_detail}\n{tb}")
-        return {
-            "entries": [],
-            "debug": debug_info,
-            "error": f"Failed to load audit history: {str(e)}"
-        }
+        raise HTTPException(status_code=500, detail=f"Failed to load audit history: {str(e)}")
+
+@router.post("/history/approve")
+def approve_compliance_entry(data: dict):
+    try:
+        hotel_id = data.get("hotel_id")
+        task_id = data.get("task_id")
+        timestamp = data.get("timestamp")
+        
+        if not all([hotel_id, task_id, timestamp]):
+            raise HTTPException(status_code=400, detail="Missing required fields")
+            
+        # Load the existing JSON file
+        key = f"logs/compliance-history/{hotel_id}.json"
+        try:
+            history_obj = s3.get_object(Bucket=BUCKET, Key=key)
+            history_data = json.loads(history_obj["Body"].read())
+        except Exception as e:
+            raise HTTPException(status_code=404, detail=f"Could not find history for hotel: {hotel_id}")
+            
+        # Update the entry
+        if task_id in history_data:
+            updated = False
+            for entry in history_data[task_id]:
+                # Check if this is the entry to approve (match by uploaded_at timestamp)
+                if entry.get("uploaded_at") == timestamp:
+                    entry["approved"] = True
+                    updated = True
+                    
+            if not updated:
+                raise HTTPException(status_code=404, detail="Entry not found")
+                
+            # Save back to S3
+            s3.put_object(
+                Bucket=BUCKET,
+                Key=key,
+                Body=json.dumps(history_data, indent=2),
+                ContentType="application/json"
+            )
+            
+            return {"success": True, "message": "Entry approved"}
+        else:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found for hotel {hotel_id}")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        error_detail = str(e)
+        tb = traceback.format_exc()
+        print(f"Error approving entry: {error_detail}\n{tb}")
+        raise HTTPException(status_code=500, detail=f"Approval failed: {str(e)}")
