@@ -10,7 +10,7 @@ BUCKET_NAME = "jmk-project-uploads"
 
 # ✅ NEW PATH STRUCTURE
 def _get_history_key(hotel_id: str) -> str:
-    return f"{hotel_id}/logs/compliance-history.json"
+    return f"logs/compliance-history/{hotel_id}.json"
 
 def load_compliance_history(hotel_id: str) -> dict:
     key = _get_history_key(hotel_id)
