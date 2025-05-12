@@ -18,7 +18,6 @@ s3 = boto3.client(
 BUCKET = os.getenv("AWS_BUCKET_NAME")
 RULES_PATH = "app/data/compliance.json"
 
-
 @router.get("/score/{hotel_id}")
 def get_compliance_score(hotel_id: str):
     grace_period = timedelta(days=30)
@@ -54,7 +53,8 @@ def get_compliance_score(hotel_id: str):
                             meta = s3.get_object(Bucket=BUCKET, Key=obj["Key"])
                             data = json.loads(meta["Body"].read().decode("utf-8"))
                             report_date = datetime.strptime(data["report_date"], "%Y-%m-%d")
-                            all_files.append((report_date, points))
+                            upload_date = obj["LastModified"]
+                            all_files.append((report_date, upload_date, points))
                             if is_still_valid(frequency, report_date, now, grace_period):
                                 valid_files.append(report_date)
                 except Exception:
@@ -68,8 +68,8 @@ def get_compliance_score(hotel_id: str):
                 earned_points += score
                 breakdown[task_id] = score
 
-                for report_date, pts in all_files:
-                    mkey = report_date.strftime("%Y-%m")
+                for _, upload_date, pts in all_files:
+                    mkey = upload_date.strftime("%Y-%m")
                     if mkey not in monthly_history:
                         monthly_history[mkey] = {"score": 0, "max": 0}
                     monthly_history[mkey]["score"] += pts
@@ -96,7 +96,7 @@ def get_compliance_score(hotel_id: str):
                 if latest and is_still_valid(frequency, latest, now, grace_period):
                     earned_points += points
                     breakdown[task_id] = points
-                    mkey = latest.strftime("%Y-%m")
+                    mkey = now.strftime("%Y-%m")  # Use *current* month for confirmation
                     if mkey not in monthly_history:
                         monthly_history[mkey] = {"score": 0, "max": 0}
                     monthly_history[mkey]["score"] += points
@@ -112,7 +112,7 @@ def get_compliance_score(hotel_id: str):
         "monthly_history": dict(sorted(monthly_history.items()))
     }
 
-    # Save to latest.json
+    # Save to S3 as latest.json
     try:
         latest_key = f"{hotel_id}/compliance/latest.json"
         s3.put_object(
@@ -126,7 +126,6 @@ def get_compliance_score(hotel_id: str):
 
     return result
 
-
 # --- Helpers ---
 
 def expected_uploads(frequency: str) -> int:
@@ -139,7 +138,6 @@ def expected_uploads(frequency: str) -> int:
         "Every 5 Years": 1,
         "Reviewed Annually": 1,
     }.get(frequency, 1)
-
 
 def is_still_valid(frequency: str, report_date: datetime, now: datetime, grace: timedelta) -> bool:
     interval = {
