@@ -44,7 +44,7 @@ async def upload_compliance_doc(
     s3_key = f"{hotel_id}/compliance/{task_id}/{report_tag}_{unique_suffix}_{safe_filename}"
     metadata_key = s3_key + ".json"
 
-    file_url = f"https://{BUCKET}.s3.amazonaws.com/{s3_key}"
+    file_url = f"https://{BUCKET}.s3.eu-west-1.amazonaws.com/{s3_key}"
 
     metadata = {
         "report_date": parsed_date.strftime("%Y-%m-%d"),
@@ -57,14 +57,25 @@ async def upload_compliance_doc(
     }
 
     try:
-        # Store the file with metadata embedded so it renders inline
+        # Step 1: Upload file to S3
         s3.put_object(
             Bucket=BUCKET,
             Key=s3_key,
             Body=file.file,
-            ContentType="application/pdf",
-            ContentDisposition="inline"
+            ContentType="application/pdf"
         )
+
+        # Step 2: Replace metadata to enforce inline rendering
+        s3.copy_object(
+            Bucket=BUCKET,
+            CopySource={'Bucket': BUCKET, 'Key': s3_key},
+            Key=s3_key,
+            MetadataDirective='REPLACE',
+            ContentType='application/pdf',
+            ContentDisposition='inline'
+        )
+
+        # Save associated metadata JSON
         s3.put_object(Bucket=BUCKET, Key=metadata_key, Body=json.dumps(metadata, indent=2))
         add_history_entry(hotel_id, task_id, metadata)
     except Exception as e:
