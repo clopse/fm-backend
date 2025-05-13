@@ -1,10 +1,9 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from datetime import datetime, timedelta
+from datetime import datetime
 from dotenv import load_dotenv
 import os
 import json
 import boto3
-
 from app.utils.compliance_history import add_history_entry
 from .compliance_score import get_compliance_score
 
@@ -20,7 +19,6 @@ s3 = boto3.client(
 BUCKET = os.getenv("AWS_BUCKET_NAME")
 
 router = APIRouter()
-
 
 @router.post("/uploads/compliance")
 async def upload_compliance_doc(
@@ -59,7 +57,15 @@ async def upload_compliance_doc(
     }
 
     try:
-        s3.upload_fileobj(file.file, BUCKET, s3_key)
+        s3.upload_fileobj(
+            Fileobj=file.file,
+            Bucket=BUCKET,
+            Key=s3_key,
+            ExtraArgs={
+                "ContentType": "application/pdf",
+                "ContentDisposition": "inline"
+            }
+        )
         s3.put_object(Bucket=BUCKET, Key=metadata_key, Body=json.dumps(metadata, indent=2))
         add_history_entry(hotel_id, task_id, metadata)
     except Exception as e:
