@@ -57,14 +57,13 @@ async def upload_compliance_doc(
     }
 
     try:
-        s3.upload_fileobj(
-            Fileobj=file.file,
+        # Store the file with metadata embedded so it renders inline
+        s3.put_object(
             Bucket=BUCKET,
             Key=s3_key,
-            ExtraArgs={
-                "ContentType": "application/pdf",
-                "ContentDisposition": "inline"
-            }
+            Body=file.file,
+            ContentType="application/pdf",
+            ContentDisposition="inline"
         )
         s3.put_object(Bucket=BUCKET, Key=metadata_key, Body=json.dumps(metadata, indent=2))
         add_history_entry(hotel_id, task_id, metadata)
