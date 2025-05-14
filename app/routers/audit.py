@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Query
 import boto3
 import os
 import json
@@ -37,10 +37,21 @@ def update_approval_log(action: str, entry: dict):
 
 
 @router.get("/history/all")
-def get_audit_queue():
+def get_audit_queue(hotel_id: str = Query(None), task_id: str = Query(None)):
     try:
         obj = s3.get_object(Bucket=BUCKET, Key=APPROVAL_LOG_KEY)
         entries = json.loads(obj["Body"].read())
+
+        # 🧠 Support both wrapped (legacy) and raw array formats
+        if isinstance(entries, dict) and "entries" in entries:
+            entries = entries["entries"]
+
+        # Optional filtering by hotel_id or task_id
+        if hotel_id:
+            entries = [e for e in entries if e.get("hotel_id") == hotel_id]
+        if task_id:
+            entries = [e for e in entries if e.get("task_id") == task_id]
+
         return {"entries": entries}
     except Exception as e:
         print(f"Error reading approval log: {e}")
