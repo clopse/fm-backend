@@ -172,7 +172,7 @@
         "label": "Fire Evacuation Drill",
         "frequency": "Twice Annually",
         "category": "Fire",
-        "type": "confirmation",
+        "type": "upload",
         "needs_report": "yes",
         "mandatory": true,
         "points": 15,
