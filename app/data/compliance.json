@@ -184,7 +184,7 @@
         "frequency": "Annually",
         "category": "Fire",
         "type": "confirmation",
-        "needs_report": "yes",
+        "needs_report": "no",
         "mandatory": true,
         "points": 15,
         "info_popup": "The fire evacuation plan must be reviewed annually and after any building modifications to ensure it remains current and effective.\n\n⚖️ Fire Services Act (Ireland); Regulatory Reform (Fire Safety) Order 2005 (UK)"
