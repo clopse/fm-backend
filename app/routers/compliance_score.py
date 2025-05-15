@@ -55,7 +55,8 @@ def get_compliance_score(hotel_id: str):
                             report_date = datetime.strptime(data["report_date"], "%Y-%m-%d")
                             upload_date = obj["LastModified"]
                             all_files.append((report_date, upload_date, points))
-                            if is_still_valid(frequency, report_date, now, grace_period):
+                            # Only consider uploads in last 12 months
+                            if report_date >= now - timedelta(days=365):
                                 valid_files.append(report_date)
                 except Exception:
                     pass
@@ -96,7 +97,7 @@ def get_compliance_score(hotel_id: str):
                 if latest and is_still_valid(frequency, latest, now, grace_period):
                     earned_points += points
                     breakdown[task_id] = points
-                    mkey = now.strftime("%Y-%m")  # Use *current* month for confirmation
+                    mkey = now.strftime("%Y-%m")
                     if mkey not in monthly_history:
                         monthly_history[mkey] = {"score": 0, "max": 0}
                     monthly_history[mkey]["score"] += points
@@ -112,7 +113,6 @@ def get_compliance_score(hotel_id: str):
         "monthly_history": dict(sorted(monthly_history.items()))
     }
 
-    # Save to S3 as latest.json
     try:
         latest_key = f"{hotel_id}/compliance/latest.json"
         s3.put_object(
