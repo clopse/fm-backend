@@ -40,7 +40,7 @@ def add_history_entry(hotel_id: str, task_id: str, entry: dict):
     if task_id not in history:
         history[task_id] = []
     history[task_id].insert(0, entry)
-    history[task_id] = history[task_id][:10]  # Limit to 10 latest entries per task
+    history[task_id] = history[task_id][:50]  # Limit to 10 latest entries per task
     save_compliance_history(hotel_id, history)
 
 def delete_history_entry(hotel_id: str, task_id: str, timestamp: str):
