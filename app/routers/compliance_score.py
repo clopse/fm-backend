@@ -55,7 +55,6 @@ def get_compliance_score(hotel_id: str):
                             report_date = datetime.strptime(data["report_date"], "%Y-%m-%d")
                             upload_date = obj["LastModified"]
                             all_files.append((report_date, upload_date, points))
-                            # Only consider uploads in last 12 months
                             if report_date >= now - timedelta(days=365):
                                 valid_files.append(report_date)
                 except Exception:
@@ -69,12 +68,13 @@ def get_compliance_score(hotel_id: str):
                 earned_points += score
                 breakdown[task_id] = score
 
-                for _, upload_date, pts in all_files:
+                for report_date, upload_date, pts in all_files:
                     mkey = upload_date.strftime("%Y-%m")
                     if mkey not in monthly_history:
                         monthly_history[mkey] = {"score": 0, "max": 0}
-                    monthly_history[mkey]["score"] += pts
                     monthly_history[mkey]["max"] += pts
+                    if is_still_valid(frequency, report_date, now, grace_period):
+                        monthly_history[mkey]["score"] += pts
 
             elif task_type == "confirmation":
                 latest = None
