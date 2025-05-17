@@ -46,7 +46,7 @@ def add_history_entry(hotel_id: str, task_id: str, entry: dict):
 
     # Insert at top, keep max 4
     history[task_id].insert(0, entry)
-    history[task_id] = history[task_id][:4]
+    history[task_id] = history[task_id][:50]
 
     save_compliance_history(hotel_id, history)
 
