@@ -43,6 +43,22 @@ def update_approval_log(action: str, entry: dict):
     )
 
 
+def add_history_entry_and_approval_log(hotel_id: str, task_id: str, entry: dict):
+    add_history_entry(hotel_id, task_id, entry)
+
+    if entry.get("type") == "upload" and not entry.get("approved"):
+        update_approval_log("add", {
+            "hotel_id": hotel_id,
+            "task_id": task_id,
+            "report_date": entry.get("report_date"),
+            "uploaded_at": entry.get("uploaded_at"),
+            "filename": entry.get("filename"),
+            "fileUrl": entry.get("fileUrl"),
+            "uploaded_by": entry.get("uploaded_by"),
+            "type": "upload"
+        })
+
+
 @router.get("/compliance/history/approval-log")
 def get_approval_log():
     try:
@@ -123,20 +139,8 @@ async def upload_compliance_doc(
             "loggedAt": now_str
         }
 
-        # Save to hotel log
-        add_history_entry(hotel_id, task_id, entry)
-
-        # Save to approval log
-        update_approval_log("add", {
-            "hotel_id": hotel_id,
-            "task_id": task_id,
-            "report_date": report_date,
-            "uploaded_at": now_str,
-            "filename": filename,
-            "fileUrl": file_url,
-            "uploaded_by": uploaded_by,
-            "type": "upload"
-        })
+        # Save to hotel log and approval log
+        add_history_entry_and_approval_log(hotel_id, task_id, entry)
 
         return {"success": True, "message": "Upload successful"}
 
