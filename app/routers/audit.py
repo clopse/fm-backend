@@ -1,4 +1,4 @@
-# --- FastAPI Audit Routes (compliance_audit.py) ---
+# --- FastAPI Audit Routes (audit.py) ---
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Body
 from botocore.exceptions import ClientError
@@ -19,8 +19,10 @@ s3 = boto3.client("s3")
 def update_approval_log(action: str, entry: dict):
     try:
         obj = s3.get_object(Bucket=BUCKET, Key=APPROVAL_LOG_KEY)
-        log = json.loads(obj["Body"].read())
-    except ClientError:
+        body = obj["Body"].read().decode("utf-8")
+        log = json.loads(body) if body.strip() else []
+    except (ClientError, json.JSONDecodeError) as e:
+        print(f"⚠️ Starting fresh approval log: {e}")
         log = []
 
     if action == "add":
@@ -32,6 +34,7 @@ def update_approval_log(action: str, entry: dict):
             e.get("uploaded_at") == entry.get("uploaded_at")
         )]
 
+    print("🔁 Writing to approval_log.json:", len(log), "entries")
     s3.put_object(
         Bucket=BUCKET,
         Key=APPROVAL_LOG_KEY,
@@ -44,9 +47,10 @@ def update_approval_log(action: str, entry: dict):
 def get_approval_log():
     try:
         obj = s3.get_object(Bucket=BUCKET, Key=APPROVAL_LOG_KEY)
-        log = json.loads(obj["Body"].read())
+        body = obj["Body"].read().decode("utf-8")
+        log = json.loads(body) if body.strip() else []
         return {"entries": log}
-    except ClientError:
+    except (ClientError, json.JSONDecodeError):
         return {"entries": []}
 
 
