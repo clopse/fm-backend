@@ -1,16 +1,20 @@
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
-import boto3
-import os
-import json
-from datetime import datetime
+# --- FastAPI Audit Routes (compliance_audit.py) ---
+
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Body
 from botocore.exceptions import ClientError
+from datetime import datetime
+import boto3
+import json
+import os
+
 from app.routers.compliance_history import add_history_entry
 
 router = APIRouter()
+
 BUCKET = os.getenv("AWS_BUCKET_NAME")
+APPROVAL_LOG_KEY = "logs/compliance-history/approval_log.json"
 s3 = boto3.client("s3")
 
-APPROVAL_LOG_KEY = "logs/compliance-history/approval_log.json"
 
 def update_approval_log(action: str, entry: dict):
     try:
@@ -35,6 +39,56 @@ def update_approval_log(action: str, entry: dict):
         ContentType="application/json"
     )
 
+
+@router.get("/compliance/history/approval-log")
+def get_approval_log():
+    try:
+        obj = s3.get_object(Bucket=BUCKET, Key=APPROVAL_LOG_KEY)
+        log = json.loads(obj["Body"].read())
+        return {"entries": log}
+    except ClientError:
+        return {"entries": []}
+
+
+@router.post("/compliance/history/approve")
+def mark_approved(data: dict = Body(...)):
+    hotel_id = data["hotel_id"]
+    task_id = data["task_id"]
+    timestamp = data["timestamp"]
+
+    hotel_log_key = f"logs/compliance-history/{hotel_id}.json"
+
+    try:
+        obj = s3.get_object(Bucket=BUCKET, Key=hotel_log_key)
+        hotel_log = json.loads(obj["Body"].read())
+    except ClientError:
+        raise HTTPException(status_code=404, detail="Hotel history file not found")
+
+    updated = False
+    for item in hotel_log.get(task_id, []):
+        if item.get("uploaded_at") == timestamp:
+            item["approved"] = True
+            updated = True
+
+    if not updated:
+        raise HTTPException(status_code=404, detail="Upload entry not found")
+
+    s3.put_object(
+        Bucket=BUCKET,
+        Key=hotel_log_key,
+        Body=json.dumps(hotel_log, indent=2),
+        ContentType="application/json"
+    )
+
+    update_approval_log("remove", {
+        "hotel_id": hotel_id,
+        "task_id": task_id,
+        "uploaded_at": timestamp
+    })
+
+    return {"success": True}
+
+
 @router.post("/uploads/compliance")
 async def upload_compliance_doc(
     hotel_id: str = Form(...),
@@ -53,6 +107,7 @@ async def upload_compliance_doc(
         s3.put_object(Bucket=BUCKET, Key=key, Body=file_content)
 
         file_url = f"https://{BUCKET}.s3.amazonaws.com/{key}"
+
         entry = {
             "report_date": report_date,
             "uploaded_at": now_str,
@@ -64,10 +119,10 @@ async def upload_compliance_doc(
             "loggedAt": now_str
         }
 
-        # ✅ Add entry via shared handler (uses full history retention logic)
+        # Save to hotel log
         add_history_entry(hotel_id, task_id, entry)
 
-        # ✅ Log to approval log
+        # Save to approval log
         update_approval_log("add", {
             "hotel_id": hotel_id,
             "task_id": task_id,
