@@ -23,7 +23,6 @@ async def get_due_tasks(hotel_id: str):
     month_start = now.replace(day=1)
     next_month = (month_start + timedelta(days=32)).replace(day=1)
     next_month_end = (next_month + timedelta(days=32)).replace(day=1)
-    year_month = now.strftime("%Y-%m")
 
     try:
         with open(RULES_PATH, "r") as f:
@@ -40,6 +39,9 @@ async def get_due_tasks(hotel_id: str):
             frequency = task.get("frequency", "").lower()
             task_type = task.get("type", "upload")
 
+            if task_type != "upload":
+                continue  # Skip confirmation tasks
+
             interval = {
                 "monthly": 30,
                 "quarterly": 90,
@@ -52,41 +54,33 @@ async def get_due_tasks(hotel_id: str):
             if interval == 0:
                 continue
 
-            if task_type == "upload":
-                latest = None
-                prefix = f"{hotel_id}/compliance/{task_id}/"
-                try:
-                    resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=prefix)
-                    for obj in resp.get("Contents", []):
-                        if obj["Key"].endswith(".json"):
-                            metadata = s3.get_object(Bucket=BUCKET, Key=obj["Key"])
-                            data = json.loads(metadata["Body"].read().decode("utf-8"))
-                            report_date = datetime.strptime(data["report_date"], "%Y-%m-%d")
-                            if not latest or report_date > latest:
-                                latest = report_date
-                except Exception:
-                    pass
+            latest = None
+            prefix = f"{hotel_id}/compliance/{task_id}/"
+            try:
+                resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=prefix)
+                for obj in resp.get("Contents", []):
+                    if obj["Key"].endswith(".json"):
+                        metadata = s3.get_object(Bucket=BUCKET, Key=obj["Key"])
+                        data = json.loads(metadata["Body"].read().decode("utf-8"))
+                        report_date = datetime.strptime(data["report_date"], "%Y-%m-%d")
+                        if not latest or report_date > latest:
+                            latest = report_date
+            except Exception:
+                pass
 
-                next_due = (latest + timedelta(days=interval)) if latest else datetime.min
-                ack_key = f"{hotel_id}/acknowledged/{task_id}-{next_month.strftime('%Y-%m')}.json"
-                is_acknowledged = False
-                try:
-                    s3.head_object(Bucket=BUCKET, Key=ack_key)
-                    is_acknowledged = True
-                except:
-                    pass
+            next_due = (latest + timedelta(days=interval)) if latest else datetime.min
+            ack_key = f"{hotel_id}/acknowledged/{task_id}-{next_month.strftime('%Y-%m')}.json"
+            is_acknowledged = False
+            try:
+                s3.head_object(Bucket=BUCKET, Key=ack_key)
+                is_acknowledged = True
+            except:
+                pass
 
-                if month_start <= next_due < next_month:
-                    due_this_month.append(task)
-                elif next_month <= next_due < next_month_end and not is_acknowledged:
-                    next_month_due.append(task)
-
-            elif task_type == "confirmation":
-                key = f"confirmations/{hotel_id}/{task_id}/{year_month}.json"
-                try:
-                    s3.get_object(Bucket=BUCKET, Key=key)
-                except Exception:
-                    due_this_month.append(task)
+            if month_start <= next_due < next_month:
+                due_this_month.append(task)
+            elif next_month <= next_due < next_month_end and not is_acknowledged:
+                next_month_due.append(task)
 
     return {
         "due_this_month": due_this_month,
