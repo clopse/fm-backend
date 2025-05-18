@@ -45,7 +45,7 @@ def get_compliance_score(hotel_id: str):
             if task_type == "upload":
                 seen_dates = set()
                 valid_dates = set()
-                all_files = []
+                valid_files = []
 
                 try:
                     prefix = f"{hotel_id}/compliance/{task_id}/"
@@ -66,8 +66,9 @@ def get_compliance_score(hotel_id: str):
                                 seen_dates.add(report_date_str)
                                 if report_date >= now - timedelta(days=365):
                                     valid_dates.add(report_date_str)
-
-                            all_files.append((report_date, upload_date, points))
+                                    # Only add to valid_files if it's still valid
+                                    if is_still_valid(frequency, report_date, now, grace_period):
+                                        valid_files.append((report_date, upload_date, points))
                 except Exception:
                     pass
 
@@ -79,16 +80,17 @@ def get_compliance_score(hotel_id: str):
                 earned_points += score
                 breakdown[task_id] = score
 
-                for report_date, upload_date, pts in all_files:
+                # Only track uploads that are still valid in monthly history
+                for report_date, upload_date, pts in valid_files:
                     mkey = upload_date.strftime("%Y-%m")
                     if mkey not in monthly_history:
                         monthly_history[mkey] = {"score": 0, "max": 0}
                     monthly_history[mkey]["max"] += pts
-                    if is_still_valid(frequency, report_date, now, grace_period):
-                        monthly_history[mkey]["score"] += pts
+                    monthly_history[mkey]["score"] += pts
 
             elif task_type == "confirmation":
                 latest = None
+                latest_upload_date = None
                 try:
                     prefix = f"{hotel_id}/compliance/confirmations/{task_id}/"
                     resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=prefix)
@@ -102,17 +104,20 @@ def get_compliance_score(hotel_id: str):
                             report_date = datetime.strptime(date_str[:10], "%Y-%m-%d")
                             if not latest or report_date > latest:
                                 latest = report_date
+                                latest_upload_date = obj["LastModified"]
                 except Exception:
                     pass
 
                 if latest and is_still_valid(frequency, latest, now, grace_period):
                     earned_points += points
                     breakdown[task_id] = points
-                    mkey = now.strftime("%Y-%m")
-                    if mkey not in monthly_history:
-                        monthly_history[mkey] = {"score": 0, "max": 0}
-                    monthly_history[mkey]["score"] += points
-                    monthly_history[mkey]["max"] += points
+                    # Track confirmation in monthly history using the upload date
+                    if latest_upload_date:
+                        mkey = latest_upload_date.strftime("%Y-%m")
+                        if mkey not in monthly_history:
+                            monthly_history[mkey] = {"score": 0, "max": 0}
+                        monthly_history[mkey]["score"] += points
+                        monthly_history[mkey]["max"] += points
                 else:
                     breakdown[task_id] = 0
 
