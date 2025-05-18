@@ -1,5 +1,3 @@
-# --- app/routers/compliance_history.py ---
-
 from fastapi import APIRouter, HTTPException, Request
 import json
 import boto3
@@ -22,7 +20,7 @@ def load_compliance_history(hotel_id: str) -> dict:
         return json.loads(obj["Body"].read().decode("utf-8"))
     except s3.exceptions.NoSuchKey:
         return {}
-    except Exception as e:
+    except Exception:
         return {}
 
 def save_compliance_history(hotel_id: str, history: dict):
@@ -34,7 +32,7 @@ def save_compliance_history(hotel_id: str, history: dict):
             Body=json.dumps(history, indent=2),
             ContentType="application/json"
         )
-    except Exception as e:
+    except Exception:
         pass
 
 def update_approval_log(action: str, entry: dict):
@@ -46,7 +44,12 @@ def update_approval_log(action: str, entry: dict):
         log = []
 
     if action == "add":
-        log.append(entry)
+        log = [e for e in log if not (
+            e.get("hotel_id") == entry.get("hotel_id") and
+            e.get("task_id") == entry.get("task_id") and
+            e.get("report_date") == entry.get("report_date")
+        )]
+        log.insert(0, entry)
     elif action == "remove":
         log = [e for e in log if not (
             e.get("hotel_id") == entry.get("hotel_id") and
@@ -61,13 +64,15 @@ def update_approval_log(action: str, entry: dict):
             Body=json.dumps(log, indent=2),
             ContentType="application/json"
         )
-    except Exception as e:
+    except Exception:
         pass
 
 def add_history_entry(hotel_id: str, task_id: str, entry: dict):
     history = load_compliance_history(hotel_id)
     if task_id not in history:
         history[task_id] = []
+
+    history[task_id] = [e for e in history[task_id] if e.get("report_date") != entry.get("report_date")]
     history[task_id].insert(0, entry)
     history[task_id] = history[task_id][:50]
     save_compliance_history(hotel_id, history)
