@@ -72,7 +72,15 @@ def add_history_entry(hotel_id: str, task_id: str, entry: dict):
     if task_id not in history:
         history[task_id] = []
 
-    history[task_id] = [e for e in history[task_id] if e.get("report_date") != entry.get("report_date")]
+    # Remove duplicates by report_date OR filename (more robust)
+    history[task_id] = [
+        e for e in history[task_id]
+        if not (
+            e.get("report_date") == entry.get("report_date") or
+            e.get("filename") == entry.get("filename")
+        )
+    ]
+
     history[task_id].insert(0, entry)
     history[task_id] = history[task_id][:50]
     save_compliance_history(hotel_id, history)
