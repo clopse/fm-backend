@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 import os
 import json
 import boto3
-from app.utils.compliance_history import add_history_entry
+from app.routers.compliance_history import add_history_entry
 from .compliance_score import get_compliance_score
 
 load_dotenv()
