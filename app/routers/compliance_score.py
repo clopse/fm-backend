@@ -43,8 +43,10 @@ def get_compliance_score(hotel_id: str):
             total_points += points
 
             if task_type == "upload":
-                valid_files = []
+                seen_dates = set()
+                valid_dates = set()
                 all_files = []
+
                 try:
                     prefix = f"{hotel_id}/compliance/{task_id}/"
                     resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=prefix)
@@ -52,16 +54,25 @@ def get_compliance_score(hotel_id: str):
                         if obj["Key"].endswith(".json"):
                             meta = s3.get_object(Bucket=BUCKET, Key=obj["Key"])
                             data = json.loads(meta["Body"].read().decode("utf-8"))
-                            report_date = datetime.strptime(data["report_date"], "%Y-%m-%d")
+                            report_date_str = data.get("report_date")
+                            if not report_date_str:
+                                continue
+
+                            report_date = datetime.strptime(report_date_str, "%Y-%m-%d")
                             upload_date = obj["LastModified"]
+
+                            # Avoid duplicates by report_date
+                            if report_date_str not in seen_dates:
+                                seen_dates.add(report_date_str)
+                                if report_date >= now - timedelta(days=365):
+                                    valid_dates.add(report_date_str)
+
                             all_files.append((report_date, upload_date, points))
-                            if report_date >= now - timedelta(days=365):
-                                valid_files.append(report_date)
                 except Exception:
                     pass
 
                 expected_count = expected_uploads(frequency)
-                actual_count = len(valid_files)
+                actual_count = len(valid_dates)
                 score = round(points * (actual_count / expected_count)) if expected_count else 0
                 score = min(score, points)
 
@@ -127,7 +138,6 @@ def get_compliance_score(hotel_id: str):
     return result
 
 # --- Helpers ---
-
 def expected_uploads(frequency: str) -> int:
     return {
         "Monthly": 12,
