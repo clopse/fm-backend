@@ -20,6 +20,7 @@ BUCKET = os.getenv("AWS_BUCKET_NAME")
 
 router = APIRouter()
 
+
 @router.post("/uploads/compliance")
 async def upload_compliance_doc(
     hotel_id: str = Form(...),
@@ -72,3 +73,18 @@ async def upload_compliance_doc(
         raise HTTPException(status_code=500, detail=f"Upload error: {str(e)}")
 
     return {"message": "Upload successful", "file": file_url}
+
+
+@router.get("/compliance/task-labels")
+def get_task_labels():
+    try:
+        with open("app/data/compliance.json") as f:
+            data = json.load(f)
+        label_map = {
+            task["task_id"]: task["label"]
+            for section in data
+            for task in section.get("tasks", [])
+        }
+        return label_map
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not load task labels: {e}")
