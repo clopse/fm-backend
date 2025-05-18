@@ -83,7 +83,12 @@ def add_history_entry(hotel_id: str, task_id: str, entry: dict):
     history[task_id] = history[task_id][:50]
     save_compliance_history(hotel_id, history)
 
-    if entry.get("type") == "upload" and not entry.get("approved"):
+    entry_type = entry.get("type")
+    approved_flag = entry.get("approved")
+    print(f"🔎 Entry type: {entry_type}, approved: {approved_flag}")
+
+    if entry_type == "upload" and approved_flag is not True:
+        print(f"✅ Logging to approval log for {hotel_id} - {task_id}")
         update_approval_log("add", {
             "hotel_id": hotel_id,
             "task_id": task_id,
@@ -94,6 +99,8 @@ def add_history_entry(hotel_id: str, task_id: str, entry: dict):
             "uploaded_by": entry.get("uploaded_by"),
             "type": "upload"
         })
+    else:
+        print("🚫 Skipping approval log entry")
 
 def delete_history_entry(hotel_id: str, task_id: str, timestamp: str):
     history = load_compliance_history(hotel_id)
