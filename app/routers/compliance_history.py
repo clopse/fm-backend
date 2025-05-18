@@ -96,14 +96,6 @@ def delete_history_entry(hotel_id: str, task_id: str, timestamp: str):
         ]
         save_compliance_history(hotel_id, history)
 
-@router.get("/history/{hotel_id}")
-async def get_compliance_history(hotel_id: str):
-    try:
-        history = load_compliance_history(hotel_id)
-        return {"hotel_id": hotel_id, "history": history}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to load compliance history: {e}")
-
 @router.get("/history/approval-log")
 async def get_approval_log():
     try:
@@ -115,3 +107,11 @@ async def get_approval_log():
         return {"entries": []}
     except Exception:
         raise HTTPException(status_code=500, detail="Failed to load approval log")
+
+@router.get("/history/{hotel_id}")
+async def get_compliance_history(hotel_id: str):
+    try:
+        history = load_compliance_history(hotel_id)
+        return {"hotel_id": hotel_id, "history": history}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load compliance history: {e}")
