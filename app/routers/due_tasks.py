@@ -40,7 +40,7 @@ async def get_due_tasks(hotel_id: str):
             task_type = task.get("type", "upload")
 
             if task_type != "upload":
-                continue  # Skip confirmation tasks
+                continue
 
             interval = {
                 "monthly": 30,
@@ -56,6 +56,7 @@ async def get_due_tasks(hotel_id: str):
 
             latest = None
             prefix = f"{hotel_id}/compliance/{task_id}/"
+
             try:
                 resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=prefix)
                 for obj in resp.get("Contents", []):
@@ -68,7 +69,13 @@ async def get_due_tasks(hotel_id: str):
             except Exception:
                 pass
 
-            next_due = (latest + timedelta(days=interval)) if latest else datetime.min
+            # ✅ If never uploaded, consider it due immediately
+            if latest is None:
+                due_this_month.append(task)
+                continue
+
+            next_due = latest + timedelta(days=interval)
+
             ack_key = f"{hotel_id}/acknowledged/{task_id}-{next_month.strftime('%Y-%m')}.json"
             is_acknowledged = False
             try:
