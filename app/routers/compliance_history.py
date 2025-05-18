@@ -1,6 +1,6 @@
 # --- app/routers/compliance_history.py ---
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 import json
 import boto3
 from datetime import datetime
@@ -115,3 +115,29 @@ async def get_compliance_history(hotel_id: str):
         return {"hotel_id": hotel_id, "history": history}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load compliance history: {e}")
+
+@router.post("/history/approve")
+async def approve_compliance_entry(request: Request):
+    data = await request.json()
+    hotel_id = data.get("hotel_id")
+    task_id = data.get("task_id")
+    timestamp = data.get("timestamp")
+
+    if not hotel_id or not task_id or not timestamp:
+        raise HTTPException(status_code=400, detail="Missing required fields.")
+
+    update_approval_log("remove", {
+        "hotel_id": hotel_id,
+        "task_id": task_id,
+        "uploaded_at": timestamp
+    })
+
+    history = load_compliance_history(hotel_id)
+    if task_id in history:
+        for entry in history[task_id]:
+            if entry.get("uploaded_at") == timestamp or entry.get("uploadedAt") == timestamp:
+                entry["approved"] = True
+                break
+        save_compliance_history(hotel_id, history)
+
+    return {"success": True}
