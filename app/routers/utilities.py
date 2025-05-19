@@ -23,6 +23,26 @@ def detect_bill_type(pages_text: list[str]) -> str:
         return "gas"
     return "electricity"
 
+def send_upload_webhook(hotel_id, bill_type, filename, billing_start, s3_path):
+    webhook_url = os.getenv("UPLOAD_WEBHOOK_URL")
+    if not webhook_url:
+        print("⚠️ No webhook URL set in .env")
+        return
+    try:
+        payload = {
+            "status": "success",
+            "hotel_id": hotel_id,
+            "bill_type": bill_type,
+            "filename": filename,
+            "billing_start": billing_start,
+            "s3_path": s3_path,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        res = requests.post(webhook_url, json=payload, timeout=5)
+        print(f"📡 Webhook sent: {res.status_code}")
+    except Exception as e:
+        print(f"⚠️ Webhook failed: {e}")
+
 @router.post("/utilities/parse-and-save")
 async def parse_and_save(
     background_tasks: BackgroundTasks,
@@ -117,7 +137,7 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename):
             print(f"🔁 Poll {attempt + 1}: {status}")
 
             if status == "completed":
-                time.sleep(2)  # Buffer to ensure result is populated
+                time.sleep(2)
                 std_check = requests.get(
                     f"https://app.docupanda.io/standardize/{std_id}",
                     headers={"accept": "application/json", "X-API-Key": DOCUPANDA_API_KEY},
@@ -140,6 +160,7 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename):
                 s3_json_path = save_json_to_s3(parsed, hotel_id, bill_type, billing_start, filename)
                 save_pdf_to_s3(content, hotel_id, bill_type, billing_start, filename)
                 save_parsed_data_to_db(db, hotel_id, bill_type, parsed, s3_json_path)
+                send_upload_webhook(hotel_id, bill_type, filename, billing_start, s3_json_path)
                 print(f"✅ Saved to S3 and DB: {s3_json_path}")
                 return
 
