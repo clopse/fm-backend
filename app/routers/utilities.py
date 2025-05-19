@@ -239,14 +239,16 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename, prech
             print("❌ Job polling timed out.")
             return
 
-        # Use precheck bill type if available, otherwise detect from DocuPanda text
+        # Use precheck bill type if available, otherwise detect from DocuPipe text
         bill_type = "unknown"
-        if precheck_bill_type and precheck_bill_type in ["gas", "electricity"]:
-            bill_type = precheck_bill_type
+        print(f"🔍 Checking precheck result: '{precheck_bill_type}' (type: {type(precheck_bill_type)})")
+        if precheck_bill_type and precheck_bill_type.strip() and precheck_bill_type in ["gas", "electricity"]:
+            bill_type = precheck_bill_type.strip()
             print(f"✅ Using precheck bill type: {bill_type}")
         else:
-            # Fallback: detect from DocuPanda text
-            print("🔍 No precheck result, detecting from DocuPanda text...")
+            # Fallback: detect from DocuPipe text
+            print("🔍 No valid precheck result, detecting from DocuPipe text...")
+            print(f"   Precheck value was: '{precheck_bill_type}'")
             doc_res = requests.get(
                 f"https://app.docupipe.ai/document/{document_id}",
                 headers={"accept": "application/json", "X-API-Key": DOCUPIPE_API_KEY},
@@ -282,6 +284,7 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename, prech
 
         schema_id = SCHEMA_ELECTRICITY if bill_type == "electricity" else SCHEMA_GAS
         print(f"🔎 Final bill type: {bill_type} → using schema: {schema_id}")
+        print(f"🔧 Available schemas - GAS: {SCHEMA_GAS}, ELECTRICITY: {SCHEMA_ELECTRICITY}")
 
         # Try both v1 and v2 standardize endpoints
         standardize_endpoints = [
