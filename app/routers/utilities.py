@@ -15,16 +15,18 @@ DOCUPANDA_API_KEY = os.getenv("DOCUPANDA_API_KEY")
 SCHEMA_ELECTRICITY = "3ca991a9"
 SCHEMA_GAS = "bd3ec499"
 
-def detect_bill_type(pages_text: list[str]) -> str:
+def detect_bill_type(pages_text: list[str], supplier: str) -> str:
     joined = " ".join(pages_text).lower()
-    if "mprn" in joined or "mic" in joined or "day units" in joined:
-        return "electricity"
-    elif "gprn" in joined or "therms" in joined or "gas usage" in joined:
+    supplier = supplier.lower()
+    if "gprn" in joined or "therms" in joined or "gas usage" in joined or "flogas" in supplier:
         return "gas"
-    return "electricity"
+    elif "mprn" in joined or "mic" in joined or "day units" in joined or "arden" in supplier:
+        return "electricity"
+    return "electricity"  # fallback default
 
 def send_upload_webhook(hotel_id, bill_type, filename, billing_start, s3_path):
     webhook_url = os.getenv("UPLOAD_WEBHOOK_URL")
+    print(f"➡️ Using webhook URL: {webhook_url}")
     if not webhook_url:
         print("⚠️ No webhook URL set in .env")
         return
@@ -107,8 +109,9 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename):
         )
         doc_json = doc_res.json()
         pages_text = doc_json.get("result", {}).get("pagesText", [])
-        bill_type = detect_bill_type(pages_text)
+        bill_type = detect_bill_type(pages_text, supplier)
         schema_id = SCHEMA_ELECTRICITY if bill_type == "electricity" else SCHEMA_GAS
+        print(f"🔎 Detected bill type: {bill_type} → using schema: {schema_id}")
 
         std_res = requests.post(
             "https://app.docupanda.io/standardize/batch",
@@ -160,8 +163,10 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename):
                 s3_json_path = save_json_to_s3(parsed, hotel_id, bill_type, billing_start, filename)
                 save_pdf_to_s3(content, hotel_id, bill_type, billing_start, filename)
                 save_parsed_data_to_db(db, hotel_id, bill_type, parsed, s3_json_path)
+                print("🧠 Parsed data saved to DB")
+                print("🚀 Sending webhook now")
                 send_upload_webhook(hotel_id, bill_type, filename, billing_start, s3_json_path)
-                print(f"✅ Saved to S3 and DB: {s3_json_path}")
+                print(f"✅ Done — file saved and webhook sent")
                 return
 
             elif status == "error":
