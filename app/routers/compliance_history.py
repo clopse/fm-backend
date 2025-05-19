@@ -154,3 +154,36 @@ async def approve_compliance_entry(request: Request):
         save_compliance_history(hotel_id, history)
 
     return {"success": True}
+
+@router.get("/history/matrix")
+def get_compliance_matrix():
+    try:
+        response = s3.list_objects_v2(Bucket=BUCKET_NAME, Prefix="logs/compliance-history/")
+        hotel_files = [obj["Key"] for obj in response.get("Contents", []) if obj["Key"].endswith(".json") and not obj["Key"].endswith("approval_log.json")]
+
+        matrix = []
+
+        for key in hotel_files:
+            hotel_id = key.split("/")[-1].replace(".json", "")
+            history = load_compliance_history(hotel_id)
+
+            for task_id, entries in history.items():
+                if not entries:
+                    continue
+
+                latest = entries[0]
+                status = (
+                    "done" if latest.get("approved") else
+                    "pending" if latest.get("type") == "upload" else
+                    "missing"
+                )
+
+                matrix.append({
+                    "hotel_id": hotel_id,
+                    "task_id": task_id,
+                    "status": status
+                })
+
+        return {"entries": matrix}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to build compliance matrix: {e}")
