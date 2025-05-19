@@ -100,10 +100,11 @@ def send_upload_webhook(hotel_id, bill_type, filename, billing_start, s3_path):
 
 @router.post("/utilities/precheck")
 async def precheck_file(
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    supplier: str = Form(...)
 ):
     """
-    Quick precheck to validate file and detect supplier/bill type
+    Quick precheck to validate file and detect bill type early
     """
     try:
         # Check file type
@@ -115,6 +116,57 @@ async def precheck_file(
         if len(content) > 10 * 1024 * 1024:  # 10MB limit
             return {"valid": False, "error": "File too large (max 10MB)"}
         
+        # Quick PDF text extraction for bill type detection
+        bill_type = "unknown"
+        try:
+            # Upload to DocuPanda for quick text extraction
+            encoded = base64.b64encode(content).decode()
+            upload_res = requests.post(
+                "https://app.docupanda.io/document",
+                json={"document": {"file": {"contents": encoded, "filename": file.filename}}},
+                headers={
+                    "accept": "application/json",
+                    "content-type": "application/json",
+                    "X-API-Key": DOCUPANDA_API_KEY,
+                },
+                timeout=30
+            )
+            
+            if upload_res.status_code == 200:
+                data = upload_res.json()
+                document_id = data.get("documentId")
+                job_id = data.get("jobId")
+                
+                if document_id and job_id:
+                    # Quick poll for job completion (max 3 attempts)
+                    for attempt in range(3):
+                        time.sleep(3)
+                        res = requests.get(
+                            f"https://app.docupanda.io/job/{job_id}",
+                            headers={"accept": "application/json", "X-API-Key": DOCUPANDA_API_KEY},
+                            timeout=10
+                        )
+                        status = res.json().get("status")
+                        
+                        if status == "completed":
+                            # Get document text
+                            doc_res = requests.get(
+                                f"https://app.docupanda.io/document/{document_id}",
+                                headers={"accept": "application/json", "X-API-Key": DOCUPANDA_API_KEY},
+                                timeout=10
+                            )
+                            doc_json = doc_res.json()
+                            pages_text = doc_json.get("result", {}).get("pagesText", [])
+                            
+                            if pages_text:
+                                bill_type = detect_bill_type(pages_text, supplier)
+                            break
+                        elif status == "error":
+                            break
+        except Exception as e:
+            print(f"⚠️ Quick text extraction failed: {e}")
+            # Continue even if text extraction fails
+        
         # Reset file position for potential future reads
         file.file.seek(0)
         
@@ -122,7 +174,9 @@ async def precheck_file(
             "valid": True,
             "filename": file.filename,
             "size": len(content),
-            "message": "File passed precheck"
+            "bill_type": bill_type,
+            "supplier": supplier,
+            "message": f"File passed precheck - detected as {bill_type} bill"
         }
     except Exception as e:
         return {"valid": False, "error": f"Precheck failed: {str(e)}"}
