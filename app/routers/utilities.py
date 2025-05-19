@@ -115,14 +115,34 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename):
             std_json = std_check.json()
             status = std_json.get("status")
             print(f"🔁 Poll {attempt + 1}: {status}")
+
             if status == "completed":
+                time.sleep(2)  # Buffer to ensure result is populated
+                std_check = requests.get(
+                    f"https://app.docupanda.io/standardize/{std_id}",
+                    headers={"accept": "application/json", "X-API-Key": DOCUPANDA_API_KEY},
+                )
+                std_json = std_check.json()
+                print("🧾 Full standardization JSON:")
+                print(std_json)
+
                 parsed = std_json.get("result", {})
-                billing_start = parsed.get("billingPeriod", {}).get("startDate") or datetime.utcnow().strftime("%Y-%m-%d")
+                if not parsed:
+                    print("❌ Empty result — maybe schema mismatch?")
+                    return
+
+                billing_start = (
+                    parsed.get("billingPeriod", {}).get("startDate")
+                    or parsed.get("billingPeriodStartDate")
+                    or datetime.utcnow().strftime("%Y-%m-%d")
+                )
+
                 s3_json_path = save_json_to_s3(parsed, hotel_id, bill_type, billing_start, filename)
                 save_pdf_to_s3(content, hotel_id, bill_type, billing_start, filename)
                 save_parsed_data_to_db(db, hotel_id, bill_type, parsed, s3_json_path)
                 print(f"✅ Saved to S3 and DB: {s3_json_path}")
                 return
+
             elif status == "error":
                 print("❌ Standardization failed.")
                 return
@@ -130,4 +150,4 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename):
         print("❌ Standardization polling timed out.")
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch utility data: {e}")
+        raise HTTPException(status_code=500, detail=f"❌ Unexpected processing error: {e}")
