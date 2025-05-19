@@ -98,7 +98,7 @@ def send_upload_webhook(hotel_id, bill_type, filename, billing_start, s3_path):
         print(f"⚠️ Webhook failed: {e}")
 
 
-import PyPDF2
+import pdfplumber
 from io import BytesIO
 
 @router.post("/utilities/precheck")
@@ -107,7 +107,7 @@ async def precheck_file(
     supplier: str = Form(...)
 ):
     """
-    Quick precheck to validate file and detect bill type using our own PDF parser
+    Quick precheck to validate file and detect bill type using pdfplumber
     """
     try:
         # Check file type
@@ -121,31 +121,35 @@ async def precheck_file(
         
         print(f"\n🔍 PRECHECK: Starting for {file.filename} with supplier: {supplier}")
         
-        # Extract text using PyPDF2 (fast local extraction)
+        # Extract text using pdfplumber (fast local extraction)
         bill_type = "unknown"
         try:
-            pdf_stream = BytesIO(content)
-            pdf_reader = PyPDF2.PdfReader(pdf_stream)
-            
-            # Extract text from all pages
-            pages_text = []
-            for page_num in range(len(pdf_reader.pages)):
-                page = pdf_reader.pages[page_num]
-                text = page.extract_text()
-                pages_text.append(text)
-                print(f"🔍 PRECHECK: Page {page_num + 1} text sample: {text[:200]}...")
-            
-            if pages_text:
-                bill_type = detect_bill_type(pages_text, supplier)
-                print(f"🔍 PRECHECK: Detected bill type: {bill_type}")
-            else:
-                print("🔍 PRECHECK: No text extracted from PDF")
+            # Open PDF from bytes
+            with pdfplumber.open(BytesIO(content)) as pdf:
+                # Extract text from all pages
+                pages_text = []
+                for page_num, page in enumerate(pdf.pages):
+                    text = page.extract_text()
+                    if text:
+                        pages_text.append(text)
+                        print(f"🔍 PRECHECK: Page {page_num + 1} text sample: {text[:200]}...")
+                    else:
+                        print(f"🔍 PRECHECK: Page {page_num + 1} - no text extracted")
                 
+                if pages_text:
+                    bill_type = detect_bill_type(pages_text, supplier)
+                    print(f"🔍 PRECHECK: Detected bill type: {bill_type}")
+                else:
+                    print("🔍 PRECHECK: No text extracted from PDF")
+                    
         except Exception as e:
             print(f"⚠️ PRECHECK: PDF text extraction failed: {e}")
             # Try fallback - just use supplier name for detection
             if any(gas_term in supplier.lower() for gas_term in ["gas", "flogas", "lpg"]):
                 bill_type = "gas"
+                print(f"🔍 PRECHECK: Fallback detection based on supplier: {bill_type}")
+            else:
+                bill_type = "electricity"
                 print(f"🔍 PRECHECK: Fallback detection based on supplier: {bill_type}")
         
         # Reset file position for potential future reads
