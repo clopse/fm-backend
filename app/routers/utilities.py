@@ -115,6 +115,7 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename):
         pages_text = doc_json.get("result", {}).get("pagesText", [])
         bill_type = detect_bill_type(pages_text, supplier)
         schema_id = SCHEMA_ELECTRICITY if bill_type == "electricity" else SCHEMA_GAS
+        print(f"🔎 Detected bill type: {bill_type} → using schema: {schema_id}")
 
         std_res = requests.post(
             "https://app.docupanda.io/standardize/batch",
