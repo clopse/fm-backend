@@ -124,10 +124,14 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename):
         )
         print(f"⚙️ Standardization request: {std_res.status_code}")
         print(std_res.text)
-        std_id = std_res.json().get("standardizationId")
+        
+        std_id_list = std_res.json().get("standardizationIds", [])
+        std_id = std_id_list[0] if std_id_list else None
+        
         if not std_id:
-            print("❌ No standardizationId returned.")
+            print("❌ No standardizationId found in list.")
             return
+
 
         for attempt in range(10):
             time.sleep(5)
