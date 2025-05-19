@@ -104,14 +104,16 @@ from io import BytesIO
 @router.post("/utilities/precheck")
 async def precheck_file(
     file: UploadFile = File(...),
-    supplier: str = Form(...)
+    supplier: str = Form(default="Unknown")
 ):
     """
     Quick precheck to validate file and detect bill type using pdfplumber
     """
     try:
+        print(f"\n🔍 PRECHECK: Received file: {file.filename}, supplier: {supplier}")
+        
         # Check file type
-        if not file.filename.lower().endswith('.pdf'):
+        if not file.filename or not file.filename.lower().endswith('.pdf'):
             return {"valid": False, "error": "Only PDF files are supported"}
         
         # Check file size (e.g., max 10MB)
@@ -119,7 +121,7 @@ async def precheck_file(
         if len(content) > 10 * 1024 * 1024:  # 10MB limit
             return {"valid": False, "error": "File too large (max 10MB)"}
         
-        print(f"\n🔍 PRECHECK: Starting for {file.filename} with supplier: {supplier}")
+        print(f"🔍 PRECHECK: Starting for {file.filename} with supplier: {supplier}")
         
         # Extract text using pdfplumber (fast local extraction)
         bill_type = "unknown"
@@ -167,6 +169,8 @@ async def precheck_file(
         }
     except Exception as e:
         print(f"❌ PRECHECK: Failed with exception: {e}")
+        import traceback
+        traceback.print_exc()
         return {"valid": False, "error": f"Precheck failed: {str(e)}"}
 
 
