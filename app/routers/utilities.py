@@ -18,14 +18,64 @@ UPLOAD_WEBHOOK_URL = os.getenv("UPLOAD_WEBHOOK_URL")
 
 
 def detect_bill_type(pages_text: list[str], supplier: str) -> str:
-    joined = " ".join(pages_text).lower()
-    if "gas" in supplier.lower():
+    """
+    Improved bill type detection with more comprehensive keyword matching
+    """
+    # Join all pages and convert to lowercase for easier matching
+    full_text = " ".join(pages_text).lower()
+    
+    # Gas indicators (more comprehensive)
+    gas_keywords = [
+        "mprn",  # Meter Point Reference Number for gas
+        "gas usage", "gas supply", "gas bill", "gas account",
+        "therms", "cubic feet", "cu ft", "ccf",
+        "calorific value", "volume correction",
+        "gas transportation", "gas distribution",
+        "standing charge gas", "gas standing charge",
+        "gas unit rate", "gas charges",
+        "natural gas", "lpg", "liquid petroleum gas"
+    ]
+    
+    # Electricity indicators (more comprehensive) 
+    electricity_keywords = [
+        "mpan",  # Meter Point Administration Number for electricity
+        "electricity usage", "electricity supply", "electricity bill", "electricity account",
+        "kwh", "kilowatt", "kilowatt hour", "kw hr",
+        "day units", "night units", "peak units", "off-peak units",
+        "electricity transportation", "electricity distribution",
+        "standing charge electricity", "electricity standing charge", 
+        "electricity unit rate", "electricity charges",
+        "import", "export", "generation"
+    ]
+    
+    # Count keyword matches
+    gas_matches = sum(1 for keyword in gas_keywords if keyword in full_text)
+    electricity_matches = sum(1 for keyword in electricity_keywords if keyword in full_text)
+    
+    print(f"🔍 Detection results:")
+    print(f"   Gas keywords found: {gas_matches}")
+    print(f"   Electricity keywords found: {electricity_matches}")
+    print(f"   Supplier: {supplier}")
+    
+    # Decision logic - prioritize document content over supplier name
+    if gas_matches > electricity_matches and gas_matches > 0:
         return "gas"
-    if "mprn" in joined or "mic" in joined or "day units" in joined:
+    elif electricity_matches > gas_matches and electricity_matches > 0:
         return "electricity"
-    elif "gprn" in joined or "therms" in joined or "gas usage" in joined:
-        return "gas"
-    return "electricity"  # default fallback
+    elif gas_matches == electricity_matches and gas_matches > 0:
+        # If tied, use supplier name as tiebreaker
+        if any(gas_term in supplier.lower() for gas_term in ["gas", "flogas", "lpg"]):
+            return "gas"
+        else:
+            return "electricity"
+    else:
+        # No clear indicators found, use supplier as fallback
+        if any(gas_term in supplier.lower() for gas_term in ["gas", "flogas", "lpg"]):
+            return "gas"
+        else:
+            # Default to electricity if no clear indicators
+            print("⚠️ No clear bill type indicators found, defaulting to electricity")
+            return "electricity"
 
 
 def send_upload_webhook(hotel_id, bill_type, filename, billing_start, s3_path):
