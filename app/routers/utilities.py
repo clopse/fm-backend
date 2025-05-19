@@ -6,7 +6,7 @@ import requests
 import os
 import time
 from app.db.session import get_db
-from app.db.crud import save_parsed_data_to_db, get_utility_data_for_year
+from app.db.crud import save_parsed_data_to_db
 from app.utils.s3 import save_json_to_s3, save_pdf_to_s3
 
 router = APIRouter()
@@ -129,27 +129,5 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename):
 
         print("❌ Standardization polling timed out.")
 
-    except Exception as e:
-        print(f"❌ Exception during processing: {e}")
-
-
-@router.get("/api/{hotel_id}/utilities/{year}")
-def get_utilities(hotel_id: str, year: int, db: Session = Depends(get_db)):
-    try:
-        results = get_utility_data_for_year(db, hotel_id, year)
-        return {
-            "status": "success",
-            "data": [
-                {
-                    "billing_start": r.billing_start,
-                    "customer_ref": r.customer_ref,
-                    "billing_ref": r.billing_ref,
-                    "meter_number": r.meter_number,
-                    "total_amount": r.total_amount,
-                    "s3_path": r.s3_path,
-                }
-                for r in results
-            ]
-        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch utility data: {e}")
