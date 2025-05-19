@@ -90,6 +90,7 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename):
             print("❌ Missing documentId or jobId.")
             return
 
+        # Poll job status (document processing)
         for attempt in range(10):
             time.sleep(5)
             res = requests.get(
@@ -107,6 +108,7 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename):
             print("❌ Job polling timed out.")
             return
 
+        # Fetch document details
         doc_res = requests.get(
             f"https://app.docupanda.io/document/{document_id}",
             headers={"accept": "application/json", "X-API-Key": DOCUPANDA_API_KEY},
@@ -136,8 +138,11 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename):
             print("❌ No standardizationId found in list.")
             return
 
+        # Wait longer before polling standardization
+        print("⏳ Waiting 10 seconds before polling standardization result...")
+        time.sleep(10)
+
         for attempt in range(10):
-            time.sleep(5)
             std_check = requests.get(
                 f"https://app.docupanda.io/standardize/{std_id}",
                 headers={"accept": "application/json", "X-API-Key": DOCUPANDA_API_KEY},
@@ -165,9 +170,12 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename):
 
                 send_upload_webhook(hotel_id, bill_type, filename, billing_start, s3_json_path)
                 return
+
             elif status == "error":
                 print("❌ Standardization failed.")
                 return
+            else:
+                time.sleep(10)
 
         print("❌ Standardization polling timed out.")
 
