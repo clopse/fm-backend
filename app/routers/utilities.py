@@ -11,7 +11,8 @@ from app.utils.s3 import save_json_to_s3, save_pdf_to_s3
 
 router = APIRouter()
 
-DOCUPANDA_API_KEY = os.getenv("DOCUPANDA_API_KEY")
+# Update the API endpoints to DocuPipe
+DOCUPIPE_API_KEY = os.getenv("DOCUPIPE_API_KEY")  # Consider renaming env var
 SCHEMA_ELECTRICITY = "3ca991a9"
 SCHEMA_GAS = "bd3ec499"
 UPLOAD_WEBHOOK_URL = os.getenv("UPLOAD_WEBHOOK_URL")
@@ -179,31 +180,34 @@ async def parse_and_save(
     background_tasks: BackgroundTasks,
     hotel_id: str = Form(...),
     supplier: str = Form(...),
+    bill_type: str = Form(default=""),  # Accept bill_type from precheck
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
     content = await file.read()
     filename = file.filename
 
+    # Pass the detected bill_type to the background task
     background_tasks.add_task(
         process_and_store_docupanda,
-        db, content, hotel_id, supplier, filename
+        db, content, hotel_id, supplier, filename, bill_type
     )
     return {"status": "processing", "message": "Upload received. Processing in background."}
 
 
-def process_and_store_docupanda(db, content, hotel_id, supplier, filename):
+def process_and_store_docupanda(db, content, hotel_id, supplier, filename, precheck_bill_type=""):
     try:
         print(f"\n📤 Uploading {filename} to DocuPanda")
+        print(f"📋 Precheck result: bill_type = {precheck_bill_type}")
         encoded = base64.b64encode(content).decode()
 
         upload_res = requests.post(
-            "https://app.docupanda.io/document",
+            "https://app.docupipe.ai/document",
             json={"document": {"file": {"contents": encoded, "filename": filename}}},
             headers={
                 "accept": "application/json",
                 "content-type": "application/json",
-                "X-API-Key": DOCUPANDA_API_KEY,
+                "X-API-Key": DOCUPIPE_API_KEY,
             },
         )
         print(f"📤 Upload response: {upload_res.status_code}")
@@ -220,8 +224,8 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename):
         for attempt in range(10):
             time.sleep(5)
             res = requests.get(
-                f"https://app.docupanda.io/job/{job_id}",
-                headers={"accept": "application/json", "X-API-Key": DOCUPANDA_API_KEY},
+                f"https://app.docupipe.ai/job/{job_id}",
+                headers={"accept": "application/json", "X-API-Key": DOCUPIPE_API_KEY},
             )
             status = res.json().get("status")
             print(f"🕓 Job poll {attempt + 1}: {status}")
@@ -234,28 +238,75 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename):
             print("❌ Job polling timed out.")
             return
 
-        # Fetch document details
-        doc_res = requests.get(
-            f"https://app.docupanda.io/document/{document_id}",
-            headers={"accept": "application/json", "X-API-Key": DOCUPANDA_API_KEY},
-        )
-        doc_json = doc_res.json()
-        pages_text = doc_json.get("result", {}).get("pagesText", [])
-        bill_type = detect_bill_type(pages_text, supplier)
-        schema_id = SCHEMA_ELECTRICITY if bill_type == "electricity" else SCHEMA_GAS
-        print(f"🔎 Detected bill type: {bill_type} → using schema: {schema_id}")
+        # Use precheck bill type if available, otherwise detect from DocuPanda text
+        bill_type = "unknown"
+        if precheck_bill_type and precheck_bill_type in ["gas", "electricity"]:
+            bill_type = precheck_bill_type
+            print(f"✅ Using precheck bill type: {bill_type}")
+        else:
+            # Fallback: detect from DocuPanda text
+            print("🔍 No precheck result, detecting from DocuPanda text...")
+            doc_res = requests.get(
+                f"https://app.docupipe.ai/document/{document_id}",
+                headers={"accept": "application/json", "X-API-Key": DOCUPIPE_API_KEY},
+            )
+            doc_json = doc_res.json()
+            print(f"📄 DocuPanda response structure: {list(doc_json.keys())}")
+            
+            # Handle both DocuPanda and DocuPipe response formats
+            pages_text = []
+            result = doc_json.get("result", {})
+            
+            # Try DocuPanda format first (pagesText)
+            if "pagesText" in result:
+                pages_text = result["pagesText"]
+                print(f"📄 Found pagesText format with {len(pages_text)} pages")
+            # Try DocuPipe format (pages array)
+            elif "pages" in result:
+                pages_text = [page.get("text", "") for page in result["pages"]]
+                print(f"📄 Found pages array format with {len(pages_text)} pages")
+            # Try single text field
+            elif "text" in result:
+                pages_text = [result["text"]]
+                print(f"📄 Found single text format")
+            else:
+                print(f"❌ Unexpected response format. Available keys: {list(result.keys())}")
+            
+            if pages_text:
+                print(f"📄 Sample text: {pages_text[0][:200] if pages_text[0] else 'EMPTY'}...")
+                bill_type = detect_bill_type(pages_text, supplier)
+                print(f"🔍 Fallback detection result: {bill_type}")
+            else:
+                print("❌ No text found in any format")
 
-        std_res = requests.post(
-            "https://app.docupanda.io/standardize/batch",
-            json={"documentIds": [document_id], "schemaId": schema_id},
-            headers={
-                "accept": "application/json",
-                "content-type": "application/json",
-                "X-API-Key": DOCUPANDA_API_KEY,
-            },
-        )
-        print(f"⚙️ Standardization request: {std_res.status_code}")
-        print(std_res.text)
+        schema_id = SCHEMA_ELECTRICITY if bill_type == "electricity" else SCHEMA_GAS
+        print(f"🔎 Final bill type: {bill_type} → using schema: {schema_id}")
+
+        # Try both v1 and v2 standardize endpoints
+        standardize_endpoints = [
+            "https://app.docupipe.ai/v2/standardize/batch",    # DocuPipe v2 (preferred)
+            "https://app.docupipe.ai/standardize/batch"        # DocuPipe v1 (fallback)
+        ]
+        
+        std_res = None
+        for endpoint in standardize_endpoints:
+            print(f"⚙️ Trying standardization endpoint: {endpoint}")
+            std_res = requests.post(
+                endpoint,
+                json={"documentIds": [document_id], "schemaId": schema_id},
+                headers={
+                    "accept": "application/json",
+                    "content-type": "application/json",
+                    "X-API-Key": DOCUPIPE_API_KEY,
+                },
+            )
+            print(f"⚙️ Standardization response {std_res.status_code}: {std_res.text}")
+            if std_res.status_code == 200:
+                break
+        
+        if not std_res or std_res.status_code != 200:
+            print("❌ All standardization endpoints failed")
+            return
 
         std_id_list = std_res.json().get("standardizationIds", [])
         std_id = std_id_list[0] if std_id_list else None
@@ -270,8 +321,8 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename):
 
         for attempt in range(10):
             std_check = requests.get(
-                f"https://app.docupanda.io/standardize/{std_id}",
-                headers={"accept": "application/json", "X-API-Key": DOCUPANDA_API_KEY},
+                f"https://app.docupipe.ai/standardize/{std_id}",
+                headers={"accept": "application/json", "X-API-Key": DOCUPIPE_API_KEY},
             )
             std_json = std_check.json()
             status = std_json.get("status")
