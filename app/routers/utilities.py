@@ -197,7 +197,7 @@ async def parse_and_save(
 
 def process_and_store_docupanda(db, content, hotel_id, supplier, filename, precheck_bill_type=""):
     try:
-        print(f"\n📤 Uploading {filename} to DocuPanda")
+        print(f"\n📤 Uploading {filename} to DocuPipe")  # Updated message
         print(f"📋 Precheck result: bill_type = {precheck_bill_type}")
         encoded = base64.b64encode(content).decode()
 
@@ -221,7 +221,8 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename, prech
             return
 
         # Poll job status (document processing)
-        for attempt in range(10):
+        # Reduce polling attempts to prevent timeout
+        for attempt in range(6):  # Reduced from 10 to 6 attempts
             time.sleep(5)
             res = requests.get(
                 f"https://app.docupipe.ai/job/{job_id}",
@@ -251,7 +252,7 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename, prech
                 headers={"accept": "application/json", "X-API-Key": DOCUPIPE_API_KEY},
             )
             doc_json = doc_res.json()
-            print(f"📄 DocuPanda response structure: {list(doc_json.keys())}")
+            print(f"📄 DocuPipe response structure: {list(doc_json.keys())}")
             
             # Handle both DocuPanda and DocuPipe response formats
             pages_text = []
@@ -315,9 +316,9 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename, prech
             print("❌ No standardizationId found in list.")
             return
 
-        # Wait longer before polling standardization
-        print("⏳ Waiting 10 seconds before polling standardization result...")
-        time.sleep(10)
+        # Reduce wait time to prevent server timeout
+        print("⏳ Waiting 5 seconds before polling standardization result...")
+        time.sleep(5)
 
         for attempt in range(10):
             std_check = requests.get(
@@ -352,7 +353,7 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename, prech
                 print("❌ Standardization failed.")
                 return
             else:
-                time.sleep(10)
+                time.sleep(5)  # Reduced from 10 to 5 seconds
 
         print("❌ Standardization polling timed out.")
 
