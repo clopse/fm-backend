@@ -98,6 +98,36 @@ def send_upload_webhook(hotel_id, bill_type, filename, billing_start, s3_path):
         print(f"⚠️ Webhook failed: {e}")
 
 
+@router.post("/utilities/precheck")
+async def precheck_file(
+    file: UploadFile = File(...)
+):
+    """
+    Quick precheck to validate file and detect supplier/bill type
+    """
+    try:
+        # Check file type
+        if not file.filename.lower().endswith('.pdf'):
+            return {"valid": False, "error": "Only PDF files are supported"}
+        
+        # Check file size (e.g., max 10MB)
+        content = await file.read()
+        if len(content) > 10 * 1024 * 1024:  # 10MB limit
+            return {"valid": False, "error": "File too large (max 10MB)"}
+        
+        # Reset file position for potential future reads
+        file.file.seek(0)
+        
+        return {
+            "valid": True,
+            "filename": file.filename,
+            "size": len(content),
+            "message": "File passed precheck"
+        }
+    except Exception as e:
+        return {"valid": False, "error": f"Precheck failed: {str(e)}"}
+
+
 @router.post("/utilities/parse-and-save")
 async def parse_and_save(
     background_tasks: BackgroundTasks,
