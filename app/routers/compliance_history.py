@@ -8,6 +8,7 @@ router = APIRouter()
 s3 = boto3.client("s3")
 BUCKET_NAME = "jmk-project-uploads"
 APPROVAL_LOG_KEY = "logs/compliance-history/approval_log.json"
+RULES_PATH = "app/data/compliance.json"
 
 # ✅ NEW PATH STRUCTURE
 def _get_history_key(hotel_id: str) -> str:
@@ -72,7 +73,6 @@ def add_history_entry(hotel_id: str, task_id: str, entry: dict):
     if task_id not in history:
         history[task_id] = []
 
-    # Remove duplicates by report_date OR filename (more robust)
     history[task_id] = [
         e for e in history[task_id]
         if not (
@@ -85,10 +85,7 @@ def add_history_entry(hotel_id: str, task_id: str, entry: dict):
     history[task_id] = history[task_id][:50]
     save_compliance_history(hotel_id, history)
 
-    entry_type = entry.get("type")
-    approved_flag = entry.get("approved")
-
-    if entry_type == "upload" and approved_flag is not True:
+    if entry.get("type") == "upload" and entry.get("approved") is not True:
         update_approval_log("add", {
             "hotel_id": hotel_id,
             "task_id": task_id,
@@ -158,32 +155,27 @@ async def approve_compliance_entry(request: Request):
 @router.get("/history/matrix")
 def get_compliance_matrix():
     try:
-        response = s3.list_objects_v2(Bucket=BUCKET_NAME, Prefix="logs/compliance-history/")
-        hotel_files = [obj["Key"] for obj in response.get("Contents", []) if obj["Key"].endswith(".json") and not obj["Key"].endswith("approval_log.json")]
+        with open(RULES_PATH, "r") as f:
+            rules = json.load(f)
+    except Exception:
+        raise HTTPException(status_code=500, detail="Could not load compliance rules.")
 
-        matrix = []
+    hotels = [
+        "hiex", "hida", "hbhdcc", "hbhe", "sera", "moxy"
+    ]
+    all_tasks = [task["task_id"] for section in rules for task in section.get("tasks", [])]
 
-        for key in hotel_files:
-            hotel_id = key.split("/")[-1].replace(".json", "")
-            history = load_compliance_history(hotel_id)
+    entries = []
+    for hotel_id in hotels:
+        history = load_compliance_history(hotel_id)
+        for task_id in all_tasks:
+            task_entries = history.get(task_id, [])
+            if any(e.get("approved") for e in task_entries):
+                status = "done"
+            elif task_entries:
+                status = "pending"
+            else:
+                status = "missing"
+            entries.append({"hotel_id": hotel_id, "task_id": task_id, "status": status})
 
-            for task_id, entries in history.items():
-                if not entries:
-                    continue
-
-                latest = entries[0]
-                status = (
-                    "done" if latest.get("approved") else
-                    "pending" if latest.get("type") == "upload" else
-                    "missing"
-                )
-
-                matrix.append({
-                    "hotel_id": hotel_id,
-                    "task_id": task_id,
-                    "status": status
-                })
-
-        return {"entries": matrix}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to build compliance matrix: {e}")
+    return {"entries": entries}
