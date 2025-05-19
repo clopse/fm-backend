@@ -14,20 +14,22 @@ router = APIRouter()
 DOCUPANDA_API_KEY = os.getenv("DOCUPANDA_API_KEY")
 SCHEMA_ELECTRICITY = "3ca991a9"
 SCHEMA_GAS = "bd3ec499"
+UPLOAD_WEBHOOK_URL = os.getenv("UPLOAD_WEBHOOK_URL")
+
 
 def detect_bill_type(pages_text: list[str], supplier: str) -> str:
     joined = " ".join(pages_text).lower()
-    supplier = supplier.lower()
-    if "gprn" in joined or "therms" in joined or "gas usage" in joined or "flogas" in supplier:
+    if "gas" in supplier.lower():
         return "gas"
-    elif "mprn" in joined or "mic" in joined or "day units" in joined or "arden" in supplier:
+    if "mprn" in joined or "mic" in joined or "day units" in joined:
         return "electricity"
-    return "electricity"  # fallback default
+    elif "gprn" in joined or "therms" in joined or "gas usage" in joined:
+        return "gas"
+    return "electricity"  # default fallback
+
 
 def send_upload_webhook(hotel_id, bill_type, filename, billing_start, s3_path):
-    webhook_url = os.getenv("UPLOAD_WEBHOOK_URL")
-    print(f"➡️ Using webhook URL: {webhook_url}")
-    if not webhook_url:
+    if not UPLOAD_WEBHOOK_URL:
         print("⚠️ No webhook URL set in .env")
         return
     try:
@@ -40,10 +42,11 @@ def send_upload_webhook(hotel_id, bill_type, filename, billing_start, s3_path):
             "s3_path": s3_path,
             "timestamp": datetime.utcnow().isoformat()
         }
-        res = requests.post(webhook_url, json=payload, timeout=5)
+        res = requests.post(UPLOAD_WEBHOOK_URL, json=payload, timeout=5)
         print(f"📡 Webhook sent: {res.status_code}")
     except Exception as e:
         print(f"⚠️ Webhook failed: {e}")
+
 
 @router.post("/utilities/parse-and-save")
 async def parse_and_save(
@@ -61,6 +64,7 @@ async def parse_and_save(
         db, content, hotel_id, supplier, filename
     )
     return {"status": "processing", "message": "Upload received. Processing in background."}
+
 
 def process_and_store_docupanda(db, content, hotel_id, supplier, filename):
     try:
@@ -111,7 +115,6 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename):
         pages_text = doc_json.get("result", {}).get("pagesText", [])
         bill_type = detect_bill_type(pages_text, supplier)
         schema_id = SCHEMA_ELECTRICITY if bill_type == "electricity" else SCHEMA_GAS
-        print(f"🔎 Detected bill type: {bill_type} → using schema: {schema_id}")
 
         std_res = requests.post(
             "https://app.docupanda.io/standardize/batch",
@@ -124,14 +127,13 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename):
         )
         print(f"⚙️ Standardization request: {std_res.status_code}")
         print(std_res.text)
-        
+
         std_id_list = std_res.json().get("standardizationIds", [])
         std_id = std_id_list[0] if std_id_list else None
-        
+
         if not std_id:
             print("❌ No standardizationId found in list.")
             return
-
 
         for attempt in range(10):
             time.sleep(5)
@@ -144,15 +146,6 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename):
             print(f"🔁 Poll {attempt + 1}: {status}")
 
             if status == "completed":
-                time.sleep(2)
-                std_check = requests.get(
-                    f"https://app.docupanda.io/standardize/{std_id}",
-                    headers={"accept": "application/json", "X-API-Key": DOCUPANDA_API_KEY},
-                )
-                std_json = std_check.json()
-                print("🧾 Full standardization JSON:")
-                print(std_json)
-
                 parsed = std_json.get("result", {})
                 if not parsed:
                     print("❌ Empty result — maybe schema mismatch?")
@@ -167,12 +160,10 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename):
                 s3_json_path = save_json_to_s3(parsed, hotel_id, bill_type, billing_start, filename)
                 save_pdf_to_s3(content, hotel_id, bill_type, billing_start, filename)
                 save_parsed_data_to_db(db, hotel_id, bill_type, parsed, s3_json_path)
-                print("🧠 Parsed data saved to DB")
-                print("🚀 Sending webhook now")
-                send_upload_webhook(hotel_id, bill_type, filename, billing_start, s3_json_path)
-                print(f"✅ Done — file saved and webhook sent")
-                return
+                print(f"✅ Saved to S3 and DB: {s3_json_path}")
 
+                send_upload_webhook(hotel_id, bill_type, filename, billing_start, s3_json_path)
+                return
             elif status == "error":
                 print("❌ Standardization failed.")
                 return
