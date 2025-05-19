@@ -316,21 +316,36 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename, prech
             print("❌ No standardizationId found in list.")
             return
 
-        # Reduce wait time to prevent server timeout
-        print("⏳ Waiting 5 seconds before polling standardization result...")
-        time.sleep(5)
+        # Get the job ID from the standardization response
+        std_job_id = std_res.json().get("jobId")
+        if not std_job_id:
+            print("❌ No jobId found in standardization response.")
+            return
 
+        # Wait a bit before polling standardization job
+        print("⏳ Waiting 10 seconds before polling standardization job...")
+        time.sleep(10)
+
+        # Poll the standardization JOB status (not the result directly)
         for attempt in range(10):
-            std_check = requests.get(
-                f"https://app.docupipe.ai/standardize/{std_id}",
+            std_job_check = requests.get(
+                f"https://app.docupipe.ai/job/{std_job_id}",
                 headers={"accept": "application/json", "X-API-Key": DOCUPIPE_API_KEY},
             )
-            std_json = std_check.json()
-            status = std_json.get("status")
-            print(f"🔁 Poll {attempt + 1}: {status}")
+            std_job_json = std_job_check.json()
+            status = std_job_json.get("status")
+            print(f"🔁 Standardization job poll {attempt + 1}: {status}")
 
             if status == "completed":
+                # NOW fetch the final result from the std_id
+                print("✅ Standardization job completed, fetching result...")
+                std_check = requests.get(
+                    f"https://app.docupipe.ai/standardize/{std_id}",
+                    headers={"accept": "application/json", "X-API-Key": DOCUPIPE_API_KEY},
+                )
+                std_json = std_check.json()
                 parsed = std_json.get("result", {})
+                
                 if not parsed:
                     print("❌ Empty result — maybe schema mismatch?")
                     return
@@ -350,12 +365,13 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename, prech
                 return
 
             elif status == "error":
-                print("❌ Standardization failed.")
+                print("❌ Standardization job failed.")
                 return
             else:
-                time.sleep(5)  # Reduced from 10 to 5 seconds
+                # Wait between polls
+                time.sleep(8)
 
-        print("❌ Standardization polling timed out.")
+        print("❌ Standardization job polling timed out.")
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"❌ Unexpected processing error: {e}")
