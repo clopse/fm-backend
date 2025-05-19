@@ -11,10 +11,10 @@ from app.utils.s3 import save_json_to_s3, save_pdf_to_s3
 
 router = APIRouter()
 
-# Update the API endpoints to DocuPipe
+# Update the API endpoints to DocuPipe with correct schema IDs
 DOCUPIPE_API_KEY = os.getenv("DOCUPIPE_API_KEY")  # Consider renaming env var
-SCHEMA_ELECTRICITY = "3ca991a9"
-SCHEMA_GAS = "bd3ec499"
+SCHEMA_ELECTRICITY = "3ca991a9"  # Electricity Bill schema ID from DocuPipe
+SCHEMA_GAS = "33093b44"  # Gas Bill schema ID from DocuPipe (updated!)
 UPLOAD_WEBHOOK_URL = os.getenv("UPLOAD_WEBHOOK_URL")
 
 
