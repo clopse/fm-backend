@@ -79,24 +79,46 @@ def detect_bill_type(pages_text: list[str], supplier: str) -> str:
             return "electricity"
 
 
-def send_upload_webhook(hotel_id, bill_type, filename, billing_start, s3_path):
+def send_upload_webhook(hotel_id, bill_type, filename, billing_start, s3_path, supplier="Unknown"):
     if not UPLOAD_WEBHOOK_URL:
-        print("⚠️ No webhook URL set in .env")
+        print("⚠️ No webhook URL configured (set UPLOAD_WEBHOOK_URL in .env)")
         return
+    
     try:
         payload = {
             "status": "success",
             "hotel_id": hotel_id,
+            "supplier": supplier,
             "bill_type": bill_type,
             "filename": filename,
             "billing_start": billing_start,
             "s3_path": s3_path,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.utcnow().isoformat(),
+            "processed_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
         }
-        res = requests.post(UPLOAD_WEBHOOK_URL, json=payload, timeout=5)
-        print(f"📡 Webhook sent: {res.status_code}")
+        
+        print(f"📡 Sending webhook to: {UPLOAD_WEBHOOK_URL}")
+        print(f"📡 Webhook payload: {payload}")
+        
+        res = requests.post(
+            UPLOAD_WEBHOOK_URL, 
+            json=payload, 
+            headers={"Content-Type": "application/json"},
+            timeout=10
+        )
+        
+        print(f"📡 Webhook response: {res.status_code}")
+        if res.status_code != 200:
+            print(f"📡 Webhook response body: {res.text}")
+        else:
+            print("📡 Webhook sent successfully!")
+            
+    except requests.exceptions.Timeout:
+        print(f"⚠️ Webhook timeout after 10 seconds")
+    except requests.exceptions.RequestException as e:
+        print(f"⚠️ Webhook request failed: {e}")
     except Exception as e:
-        print(f"⚠️ Webhook failed: {e}")
+        print(f"⚠️ Webhook error: {e}")
 
 
 import pdfplumber
@@ -175,30 +197,67 @@ async def precheck_file(
         return {"valid": False, "error": f"Precheck failed: {str(e)}"}
 
 
+def detect_supplier_from_text(pages_text: list[str]) -> str:
+    """
+    Detect supplier from PDF text content
+    """
+    full_text = " ".join(pages_text).lower()
+    
+    # Check for supplier keywords in text
+    if "flogas" in full_text or "fgnc" in full_text:
+        return "Flogas"
+    elif "arden" in full_text or "aes916" in full_text:
+        return "Arden Energy"
+    elif "electric ireland" in full_text or "eir" in full_text:
+        return "Electric Ireland"
+    elif "bord gais" in full_text or "bord gas" in full_text:
+        return "Bord Gais"
+    else:
+        return "Unknown"
+
+
 @router.post("/utilities/parse-and-save")
 async def parse_and_save(
     background_tasks: BackgroundTasks,
     hotel_id: str = Form(...),
-    supplier: str = Form(...),
-    bill_type: str = Form(default=""),  # Accept bill_type from precheck
     file: UploadFile = File(...),
+    bill_date: str = Form(...),
     db: Session = Depends(get_db)
 ):
     content = await file.read()
     filename = file.filename
 
-    # Pass the detected bill_type to the background task
     background_tasks.add_task(
-        process_and_store_docupanda,
-        db, content, hotel_id, supplier, filename, bill_type
+        process_and_store_docupipe,
+        db, content, hotel_id, filename, bill_date
     )
     return {"status": "processing", "message": "Upload received. Processing in background."}
 
 
-def process_and_store_docupanda(db, content, hotel_id, supplier, filename, precheck_bill_type=""):
+def process_and_store_docupipe(db, content, hotel_id, filename, bill_date):
     try:
-        print(f"\n📤 Uploading {filename} to DocuPipe")  # Updated message
-        print(f"📋 Precheck result: bill_type = {precheck_bill_type}")
+        print(f"\n📤 Processing {filename}")
+        
+        # First, extract text locally with pdfplumber to detect supplier and bill type
+        supplier = "Unknown"
+        bill_type = "unknown"
+        
+        try:
+            with pdfplumber.open(BytesIO(content)) as pdf:
+                pages_text = []
+                for page in pdf.pages:
+                    text = page.extract_text()
+                    if text:
+                        pages_text.append(text)
+                
+                if pages_text:
+                    supplier = detect_supplier_from_text(pages_text)
+                    bill_type = detect_bill_type(pages_text, supplier)
+                    print(f"🔍 Detected: {supplier} - {bill_type}")
+        except Exception as e:
+            print(f"⚠️ Local parsing failed: {e}")
+        
+        # Continue with DocuPipe processing
         encoded = base64.b64encode(content).decode()
 
         upload_res = requests.post(
@@ -210,171 +269,109 @@ def process_and_store_docupanda(db, content, hotel_id, supplier, filename, prech
                 "X-API-Key": DOCUPIPE_API_KEY,
             },
         )
-        print(f"📤 Upload response: {upload_res.status_code}")
-        print(upload_res.text)
+        print(f"📤 DocuPipe upload: {upload_res.status_code}")
 
         data = upload_res.json()
         document_id = data.get("documentId")
         job_id = data.get("jobId")
+        
         if not document_id or not job_id:
-            print("❌ Missing documentId or jobId.")
+            print("❌ Missing documentId or jobId")
             return
 
-        # Poll job status (document processing)
-        # Reduce polling attempts to prevent timeout
-        for attempt in range(6):  # Reduced from 10 to 6 attempts
+        # Wait for document processing
+        for attempt in range(10):
             time.sleep(5)
             res = requests.get(
                 f"https://app.docupipe.ai/job/{job_id}",
                 headers={"accept": "application/json", "X-API-Key": DOCUPIPE_API_KEY},
             )
             status = res.json().get("status")
-            print(f"🕓 Job poll {attempt + 1}: {status}")
+            print(f"🕓 Document processing {attempt + 1}: {status}")
             if status == "completed":
                 break
             elif status == "error":
-                print("❌ Job failed.")
+                print("❌ Document processing failed")
                 return
         else:
-            print("❌ Job polling timed out.")
+            print("❌ Document processing timeout")
             return
 
-        # Use precheck bill type if available, otherwise detect from DocuPipe text
-        bill_type = "unknown"
-        print(f"🔍 Checking precheck result: '{precheck_bill_type}' (type: {type(precheck_bill_type)})")
-        if precheck_bill_type and precheck_bill_type.strip() and precheck_bill_type in ["gas", "electricity"]:
-            bill_type = precheck_bill_type.strip()
-            print(f"✅ Using precheck bill type: {bill_type}")
-        else:
-            # Fallback: detect from DocuPipe text
-            print("🔍 No valid precheck result, detecting from DocuPipe text...")
-            print(f"   Precheck value was: '{precheck_bill_type}'")
-            doc_res = requests.get(
-                f"https://app.docupipe.ai/document/{document_id}",
-                headers={"accept": "application/json", "X-API-Key": DOCUPIPE_API_KEY},
-            )
-            doc_json = doc_res.json()
-            print(f"📄 DocuPipe response structure: {list(doc_json.keys())}")
-            
-            # Handle both DocuPanda and DocuPipe response formats
-            pages_text = []
-            result = doc_json.get("result", {})
-            
-            # Try DocuPanda format first (pagesText)
-            if "pagesText" in result:
-                pages_text = result["pagesText"]
-                print(f"📄 Found pagesText format with {len(pages_text)} pages")
-            # Try DocuPipe format (pages array)
-            elif "pages" in result:
-                pages_text = [page.get("text", "") for page in result["pages"]]
-                print(f"📄 Found pages array format with {len(pages_text)} pages")
-            # Try single text field
-            elif "text" in result:
-                pages_text = [result["text"]]
-                print(f"📄 Found single text format")
-            else:
-                print(f"❌ Unexpected response format. Available keys: {list(result.keys())}")
-            
-            if pages_text:
-                print(f"📄 Sample text: {pages_text[0][:200] if pages_text[0] else 'EMPTY'}...")
-                bill_type = detect_bill_type(pages_text, supplier)
-                print(f"🔍 Fallback detection result: {bill_type}")
-            else:
-                print("❌ No text found in any format")
-
+        # Select schema based on detected bill type
         schema_id = SCHEMA_ELECTRICITY if bill_type == "electricity" else SCHEMA_GAS
-        print(f"🔎 Final bill type: {bill_type} → using schema: {schema_id}")
-        print(f"🔧 Available schemas - GAS: {SCHEMA_GAS}, ELECTRICITY: {SCHEMA_ELECTRICITY}")
+        print(f"🔎 Using schema: {schema_id} for {bill_type}")
 
-        # Try both v1 and v2 standardize endpoints
-        standardize_endpoints = [
-            "https://app.docupipe.ai/v2/standardize/batch",    # DocuPipe v2 (preferred)
-            "https://app.docupipe.ai/standardize/batch"        # DocuPipe v1 (fallback)
-        ]
-        
-        std_res = None
-        for endpoint in standardize_endpoints:
-            print(f"⚙️ Trying standardization endpoint: {endpoint}")
-            std_res = requests.post(
-                endpoint,
-                json={"documentIds": [document_id], "schemaId": schema_id},
-                headers={
-                    "accept": "application/json",
-                    "content-type": "application/json",
-                    "X-API-Key": DOCUPIPE_API_KEY,
-                },
-            )
-            print(f"⚙️ Standardization response {std_res.status_code}: {std_res.text}")
-            if std_res.status_code == 200:
-                break
-        
-        if not std_res or std_res.status_code != 200:
-            print("❌ All standardization endpoints failed")
+        # Start standardization
+        std_res = requests.post(
+            "https://app.docupipe.ai/v2/standardize/batch",
+            json={"documentIds": [document_id], "schemaId": schema_id},
+            headers={
+                "accept": "application/json",
+                "content-type": "application/json",
+                "X-API-Key": DOCUPIPE_API_KEY,
+            },
+        )
+        print(f"⚙️ Standardization started: {std_res.status_code}")
+
+        std_data = std_res.json()
+        std_job_id = std_data.get("jobId")
+        std_id = std_data.get("standardizationIds", [None])[0]
+
+        if not std_job_id or not std_id:
+            print("❌ Missing standardization IDs")
             return
 
-        std_id_list = std_res.json().get("standardizationIds", [])
-        std_id = std_id_list[0] if std_id_list else None
+        # Wait for standardization
+        print("⏳ Waiting for standardization...")
+        time.sleep(15)
 
-        if not std_id:
-            print("❌ No standardizationId found in list.")
-            return
-
-        # Get the job ID from the standardization response
-        std_job_id = std_res.json().get("jobId")
-        if not std_job_id:
-            print("❌ No jobId found in standardization response.")
-            return
-
-        # Wait a bit before polling standardization job
-        print("⏳ Waiting 10 seconds before polling standardization job...")
-        time.sleep(10)
-
-        # Poll the standardization JOB status (not the result directly)
-        for attempt in range(10):
-            std_job_check = requests.get(
+        for attempt in range(12):  # 2 minutes max
+            std_job_res = requests.get(
                 f"https://app.docupipe.ai/job/{std_job_id}",
                 headers={"accept": "application/json", "X-API-Key": DOCUPIPE_API_KEY},
             )
-            std_job_json = std_job_check.json()
-            status = std_job_json.get("status")
-            print(f"🔁 Standardization job poll {attempt + 1}: {status}")
+            status = std_job_res.json().get("status")
+            print(f"🔁 Standardization {attempt + 1}: {status}")
 
             if status == "completed":
-                # NOW fetch the final result from the std_id
-                print("✅ Standardization job completed, fetching result...")
-                std_check = requests.get(
+                # Get final result
+                result_res = requests.get(
                     f"https://app.docupipe.ai/standardize/{std_id}",
                     headers={"accept": "application/json", "X-API-Key": DOCUPIPE_API_KEY},
                 )
-                std_json = std_check.json()
-                parsed = std_json.get("result", {})
-                
-                if not parsed:
-                    print("❌ Empty result — maybe schema mismatch?")
+                parsed = result_res.json().get("result", {})
+
+                if parsed:
+                    # Extract billing date
+                    billing_start = (
+                        parsed.get("billingPeriod", {}).get("startDate")
+                        or parsed.get("billingPeriodStartDate")
+                        or bill_date
+                    )
+
+                    # Save to S3 and database
+                    s3_json_path = save_json_to_s3(parsed, hotel_id, bill_type, billing_start, filename)
+                    save_pdf_to_s3(content, hotel_id, bill_type, billing_start, filename)
+                    save_parsed_data_to_db(db, hotel_id, bill_type, parsed, s3_json_path)
+                    
+                    print(f"✅ Saved: {s3_json_path}")
+
+                    # Send webhook with all the details
+                    send_upload_webhook(hotel_id, bill_type, filename, billing_start, s3_json_path, supplier)
+                    return
+                else:
+                    print("❌ Empty result")
                     return
 
-                billing_start = (
-                    parsed.get("billingPeriod", {}).get("startDate")
-                    or parsed.get("billingPeriodStartDate")
-                    or datetime.utcnow().strftime("%Y-%m-%d")
-                )
-
-                s3_json_path = save_json_to_s3(parsed, hotel_id, bill_type, billing_start, filename)
-                save_pdf_to_s3(content, hotel_id, bill_type, billing_start, filename)
-                save_parsed_data_to_db(db, hotel_id, bill_type, parsed, s3_json_path)
-                print(f"✅ Saved to S3 and DB: {s3_json_path}")
-
-                send_upload_webhook(hotel_id, bill_type, filename, billing_start, s3_json_path)
-                return
-
             elif status == "error":
-                print("❌ Standardization job failed.")
+                print("❌ Standardization failed")
                 return
             else:
-                # Wait between polls
-                time.sleep(8)
+                time.sleep(10)
 
-        print("❌ Standardization job polling timed out.")
+        print("❌ Standardization timeout")
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"❌ Unexpected processing error: {e}")
+        print(f"❌ Processing error: {e}")
+        import traceback
+        traceback.print_exc()
