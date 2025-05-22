@@ -298,9 +298,14 @@ def process_and_store_docupipe(db, content, hotel_id, filename, bill_date, bill_
                 print(f"Standardization {attempt + 1}: {status}")
                 
                 if status == "completed":
-                    # Get final result
+                    # Add delay before fetching result to ensure it's ready
+                    print(f"Standardization completed, waiting 5 seconds before fetching result...")
+                    time.sleep(5)
+                    
+                    # Get final result - using correct endpoint from DocuPipe docs
+                    print(f"Fetching result from: https://app.docupipe.ai/standardization/{std_id}")
                     result_res = requests.get(
-                        f"https://app.docupipe.ai/standardize/{std_id}",
+                        f"https://app.docupipe.ai/standardization/{std_id}",  # Fixed endpoint URL
                         headers={"accept": "application/json", "X-API-Key": DOCUPIPE_API_KEY},
                         timeout=10
                     )
@@ -312,12 +317,16 @@ def process_and_store_docupipe(db, content, hotel_id, filename, bill_date, bill_
                         return
                     
                     result_json = result_res.json()
-                    parsed = result_json.get("result", {})
+                    print(f"DocuPipe result keys: {list(result_json.keys())}")
+                    
+                    # According to DocuPipe docs, the data is in the "data" field
+                    parsed = result_json.get("data", {})
                     
                     if not parsed:
-                        parsed = result_json.get("data", {})
+                        # Fallback to other possible field names
+                        parsed = result_json.get("result", {})
                         if not parsed:
-                            error_msg = f"Empty result from DocuPipe: {result_json}"
+                            error_msg = f"Empty result from DocuPipe. Response: {result_json}"
                             print(error_msg)
                             send_upload_webhook(hotel_id, bill_type, filename, bill_date, "", detected_supplier, "error", error_msg)
                             return
