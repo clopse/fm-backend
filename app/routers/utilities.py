@@ -16,7 +16,7 @@ router = APIRouter()
 
 DOCUPIPE_API_KEY = os.getenv("DOCUPIPE_API_KEY")
 SCHEMA_ELECTRICITY = "3ca991a9"
-SCHEMA_GAS = "33093b44"
+SCHEMA_GAS = "33093b4d"  # Fixed: was 33093b44, now 33093b4d
 UPLOAD_WEBHOOK_URL = os.getenv("UPLOAD_WEBHOOK_URL")
 
 @router.post("/utilities/create-table")
@@ -355,11 +355,12 @@ def process_and_store_docupipe(db, content, hotel_id, filename, bill_date, bill_
             send_upload_webhook(hotel_id, bill_type, filename, bill_date, "", detected_supplier, "error", error_msg)
             return
         
-        # Start standardization
+        # Start standardization - try different endpoints
         schema_id = SCHEMA_ELECTRICITY if bill_type == "electricity" else SCHEMA_GAS
         print(f"Using schema: {schema_id} for {bill_type}")
         
         try:
+            # Try the v2 endpoint first
             std_res = requests.post(
                 "https://app.docupipe.ai/v2/standardize/batch",
                 json={"documentIds": [document_id], "schemaId": schema_id},
@@ -371,8 +372,27 @@ def process_and_store_docupipe(db, content, hotel_id, filename, bill_date, bill_
                 timeout=30
             )
             
+            print(f"v2/standardize/batch response: {std_res.status_code}")
+            print(f"v2/standardize/batch response body: {std_res.text}")
+            
             if not std_res.ok:
-                error_msg = f"Standardization request failed: {std_res.status_code}"
+                # Try the v1 endpoint as fallback
+                print("v2 failed, trying v1 endpoint...")
+                std_res = requests.post(
+                    "https://app.docupipe.ai/standardize/batch",
+                    json={"documentIds": [document_id], "schemaId": schema_id},
+                    headers={
+                        "accept": "application/json",
+                        "content-type": "application/json",
+                        "X-API-Key": DOCUPIPE_API_KEY,
+                    },
+                    timeout=30
+                )
+                print(f"v1/standardize/batch response: {std_res.status_code}")
+                print(f"v1/standardize/batch response body: {std_res.text}")
+            
+            if not std_res.ok:
+                error_msg = f"Both standardization endpoints failed: v2={std_res.status_code}, response={std_res.text}"
                 print(error_msg)
                 send_upload_webhook(hotel_id, bill_type, filename, bill_date, "", detected_supplier, "error", error_msg)
                 return
