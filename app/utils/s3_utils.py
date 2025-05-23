@@ -53,7 +53,12 @@ def save_parsed_data_to_s3(
         year = bill_date[:4]
         month = bill_date[5:7]
         
-        s3_key = f"utilities/{hotel_id}/{year}/{month}/{utility_type}_{filename.replace('.pdf', '.json')}"
+        # Fix filename extension properly
+        base_filename = filename
+        if base_filename.lower().endswith('.pdf'):
+            base_filename = base_filename[:-4]  # Remove .pdf
+        
+        s3_key = f"utilities/{hotel_id}/{year}/{month}/{utility_type}_{base_filename}.json"
         
         # Save to S3
         s3_client.put_object(
