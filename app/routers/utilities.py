@@ -94,7 +94,7 @@ def detect_bill_type(pages_text, supplier):
     else:
         # Fallback to supplier-based detection when keywords are equal/unclear
         supplier_lower = supplier.lower()
-        if "flogas" in supplier_lower or "fgnc" in supplier_lower:
+        if "flogas" in supplier_lower or "fgnc" in supplier_lower or "gas" in supplier_lower:
             print("Supplier-based detection: GAS (Flogas)")
             return "gas"
         elif "arden" in supplier_lower or "aes" in supplier_lower:
@@ -102,7 +102,7 @@ def detect_bill_type(pages_text, supplier):
             return "electricity"
         else:
             print("Could not determine bill type - defaulting to electricity")
-            return "electricity"  # Default fallback
+            return "unknown"  # Default fallback
 
 
 def send_upload_webhook(hotel_id, bill_type, filename, billing_start, s3_path, supplier="Unknown", status="success", error=None):
