@@ -60,6 +60,35 @@ def save_parsed_data_to_s3(
         
         s3_key = f"utilities/{hotel_id}/{year}/{month}/{utility_type}_{base_filename}.json"
         
+        # CHECK FOR DUPLICATES - prevent same bill being uploaded twice
+        try:
+            existing_file = s3_client.get_object(Bucket=AWS_BUCKET_NAME, Key=s3_key)
+            existing_data = json.loads(existing_file['Body'].read())
+            
+            # Compare key fields to detect duplicates
+            existing_summary = existing_data.get("summary", {})
+            new_summary = bill_data["summary"]
+            
+            # Check if it's the same bill (same dates, amounts, meter readings)
+            is_duplicate = (
+                existing_summary.get("bill_date") == new_summary.get("bill_date") and
+                existing_summary.get("total_cost") == new_summary.get("total_cost") and
+                existing_summary.get("account_number") == new_summary.get("account_number")
+            )
+            
+            if is_duplicate:
+                print(f"⚠️ Duplicate bill detected: {s3_key} - skipping upload")
+                return s3_key  # Return existing path, don't save duplicate
+            else:
+                # Same filename but different bill - add timestamp to make unique
+                timestamp = datetime.utcnow().strftime("%H%M%S")
+                s3_key = f"utilities/{hotel_id}/{year}/{month}/{utility_type}_{base_filename}_{timestamp}.json"
+                print(f"📄 Same filename, different bill - saving as: {s3_key}")
+                
+        except s3_client.exceptions.NoSuchKey:
+            # File doesn't exist - proceed with upload
+            pass
+        
         # Save to S3
         s3_client.put_object(
             Bucket=AWS_BUCKET_NAME,
