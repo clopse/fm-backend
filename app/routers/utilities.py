@@ -9,7 +9,7 @@ import time
 import pdfplumber
 from io import BytesIO
 from app.db.session import get_db, engine
-from app.utils.s3_utilities import save_parsed_data_to_s3, get_utility_data_for_hotel_year, get_utility_summary_for_comparison  # NEW
+from app.utils.s3_utils import save_parsed_data_to_s3, get_utility_data_for_hotel_year, get_utility_summary_for_comparison
 from app.utils.s3 import save_pdf_to_s3
 
 router = APIRouter()
