@@ -9,7 +9,7 @@ import time
 import pdfplumber
 from io import BytesIO
 from app.db.session import get_db, engine
-from app.utils.s3_utils import save_parsed_data_to_s3, get_utility_data_for_hotel_year, get_utility_summary_for_comparison
+from app.utils.s3_utilities import save_parsed_data_to_s3, get_utility_data_for_hotel_year, get_utility_summary_for_comparison  # NEW
 from app.utils.s3 import save_pdf_to_s3
 
 router = APIRouter()
@@ -424,3 +424,63 @@ def process_and_store_docupipe(db, content, hotel_id, filename, bill_date, bill_
         send_upload_webhook(hotel_id, bill_type, filename, bill_date, "", "Unknown", "error", error_msg)
         import traceback
         traceback.print_exc()
+
+
+@router.get("/utilities/{hotel_id}/{year}")
+async def get_utilities_data(hotel_id: str, year: int):
+    """Get utility bills data from S3 for charts"""
+    try:
+        bills = get_utility_data_for_hotel_year(hotel_id, str(year))
+        
+        # Format data for frontend charts
+        electricity_data = []
+        gas_data = []
+        
+        for bill in bills:
+            summary = bill.get("summary", {})
+            
+            if bill["utility_type"] == "electricity":
+                electricity_data.append({
+                    "month": summary.get("bill_date", "")[:7],  # YYYY-MM
+                    "day_kwh": summary.get("day_kwh", 0) or 0,
+                    "night_kwh": summary.get("night_kwh", 0) or 0,
+                    "total_kwh": summary.get("total_kwh", 0) or 0,
+                    "total_eur": summary.get("total_cost", 0) or 0,
+                    "per_room_kwh": (summary.get("total_kwh", 0) or 0) / 100  # Adjust room count as needed
+                })
+            
+            elif bill["utility_type"] == "gas":
+                gas_data.append({
+                    "period": summary.get("bill_date", "")[:7],  # YYYY-MM
+                    "total_kwh": summary.get("consumption_kwh", 0) or 0,
+                    "total_eur": summary.get("total_cost", 0) or 0,
+                    "per_room_kwh": (summary.get("consumption_kwh", 0) or 0) / 100  # Adjust room count as needed
+                })
+        
+        return {
+            "electricity": electricity_data,
+            "gas": gas_data,
+            "water": []  # Add water data later if needed
+        }
+        
+    except Exception as e:
+        print(f"Error fetching utilities data: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch utilities data: {str(e)}")
+
+
+@router.get("/utilities/comparison/{year}")
+async def get_utilities_comparison(year: int, hotel_ids: str = "hiex,moxy,hida,hbhdcc,hbhe,sera,marina"):
+    """Get utility comparison data for multiple hotels"""
+    try:
+        hotel_list = hotel_ids.split(",")
+        comparison_data = get_utility_summary_for_comparison(hotel_list, str(year))
+        
+        return {
+            "comparison": comparison_data,
+            "year": year,
+            "hotels": hotel_list
+        }
+        
+    except Exception as e:
+        print(f"Error fetching comparison data: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch comparison data: {str(e)}")
