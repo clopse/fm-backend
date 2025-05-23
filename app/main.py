@@ -19,7 +19,7 @@ from app.routers import (
     compliance_leaderboard,
     confirmations,
     compliance_history,
-    compliance_tasks,         # ✅ ADD THIS
+    compliance_tasks,
     audit
 )
 
@@ -40,7 +40,7 @@ app.add_middleware(
 )
 
 # Include routers
-app.include_router(utilities.router)
+app.include_router(utilities.router)  # This gives you /utilities/... endpoints
 app.include_router(tenders.router)
 app.include_router(drawings.router)
 app.include_router(compliance.router, prefix="/compliance", tags=["compliance"])
@@ -51,7 +51,7 @@ app.include_router(compliance_score.router, prefix="/api/compliance", tags=["com
 app.include_router(compliance_leaderboard.router, prefix="/api/compliance", tags=["leaderboard"])
 app.include_router(confirmations.router, prefix="/api/compliance", tags=["confirmations"])
 app.include_router(compliance_history.router, prefix="/api/compliance", tags=["compliance-history"])
-app.include_router(compliance_tasks.router, prefix="/api/compliance", tags=["compliance-tasks"])  # ✅ NEW
+app.include_router(compliance_tasks.router, prefix="/api/compliance", tags=["compliance-tasks"])
 app.include_router(audit.router, prefix="/api/compliance", tags=["audit"])
 
 # Base routes
