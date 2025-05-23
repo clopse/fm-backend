@@ -1,157 +1,193 @@
-from sqlalchemy.orm import Session
-from sqlalchemy import text
-from app.models.utilities import UtilityBill
-from sqlalchemy.exc import SQLAlchemyError
+import boto3
+import json
 from datetime import datetime
+from typing import List, Dict, Any
+import os
 
-def save_parsed_data_to_db(
-    db: Session,
+# S3 client
+s3_client = boto3.client('s3')
+BUCKET_NAME = os.getenv("S3_BUCKET_NAME")  # Your existing bucket
+
+def save_parsed_data_to_s3(
     hotel_id: str,
     utility_type: str,
     parsed: dict,
-    s3_path: str
+    s3_json_path: str,
+    filename: str
 ):
+    """Save utility bill data as JSON file in S3"""
     try:
-        bill = UtilityBill()
-        bill.hotel_id = hotel_id
-        bill.s3_json_path = s3_path
+        # Extract key information for easy querying
+        bill_data = {
+            "hotel_id": hotel_id,
+            "utility_type": utility_type,  # "gas" or "electricity"
+            "filename": filename,
+            "uploaded_at": datetime.utcnow().isoformat(),
+            "s3_json_path": s3_json_path,
+            
+            # Standardized fields for easy comparison
+            "summary": extract_summary_data(parsed, utility_type),
+            
+            # Full parsed data for detailed analysis
+            "raw_data": parsed
+        }
+        
+        # Create S3 key: utilities/HOTEL_ID/YEAR/MONTH/TYPE_FILENAME.json
+        bill_date = bill_data["summary"].get("bill_date", datetime.utcnow().strftime("%Y-%m-%d"))
+        year = bill_date[:4]
+        month = bill_date[5:7]
+        
+        s3_key = f"utilities/{hotel_id}/{year}/{month}/{utility_type}_{filename.replace('.pdf', '.json')}"
+        
+        # Save to S3
+        s3_client.put_object(
+            Bucket=BUCKET_NAME,
+            Key=s3_key,
+            Body=json.dumps(bill_data, ensure_ascii=False, indent=2),
+            ContentType='application/json'
+        )
+        
+        print(f"✅ Saved utility bill to S3: {s3_key}")
+        return s3_key
+        
+    except Exception as e:
+        print(f"❌ Failed to save to S3: {e}")
+        raise RuntimeError(f"S3 save error: {str(e)}")
 
-        if utility_type == "gas":
-            si = parsed.get("supplierInfo", {})
-            bill.gas_supplierInfo_name = si.get("name")
-            bill.gas_supplierInfo_vatRegNo = si.get("vatRegNo")
-            bill.gas_supplierInfo_phoneNumber = si.get("phoneNumber")
-            bill.gas_supplierInfo_email = si.get("email")
-            addr = si.get("address", {})
-            bill.gas_supplierInfo_address_street = addr.get("street")
-            bill.gas_supplierInfo_address_city = addr.get("city")
-            bill.gas_supplierInfo_address_postalCode = addr.get("postalCode")
 
-            ci = parsed.get("customerInfo", {})
-            bill.gas_customerInfo_name = ci.get("name")
-            caddr = ci.get("address", {})
-            bill.gas_customerInfo_address_street = caddr.get("street")
-            bill.gas_customerInfo_address_city = caddr.get("city")
-            bill.gas_customerInfo_address_postalCode = caddr.get("postalCode")
-            bill.gas_customerInfo_contactNumber = ci.get("contactNumber")
+def extract_summary_data(parsed: dict, utility_type: str) -> dict:
+    """Extract key fields for easy comparison across hotels"""
+    
+    if utility_type == "gas":
+        bs = parsed.get("billSummary", {})
+        cd = parsed.get("consumptionDetails", {})
+        si = parsed.get("supplierInfo", {})
+        
+        return {
+            "bill_date": bs.get("billingPeriodStartDate") or bs.get("issueDate"),
+            "supplier": si.get("name"),
+            "total_cost": bs.get("totalDueAmount") or bs.get("currentBillAmount"),
+            "consumption_kwh": cd.get("consumptionValue"),
+            "consumption_unit": cd.get("consumptionUnit"),
+            "billing_period_start": bs.get("billingPeriodStartDate"),
+            "billing_period_end": bs.get("billingPeriodEndDate"),
+            "account_number": parsed.get("accountInfo", {}).get("accountNumber"),
+            "meter_number": parsed.get("accountInfo", {}).get("meterNumber")
+        }
+        
+    elif utility_type == "electricity":
+        return {
+            "bill_date": parsed.get("billingPeriod", {}).get("startDate") or parsed.get("issueDate"),
+            "supplier": parsed.get("supplier"),
+            "total_cost": parsed.get("totalAmount", {}).get("value"),
+            "day_kwh": get_consumption_by_type(parsed, "day"),
+            "night_kwh": get_consumption_by_type(parsed, "night"),
+            "total_kwh": (get_consumption_by_type(parsed, "day") or 0) + (get_consumption_by_type(parsed, "night") or 0),
+            "billing_period_start": parsed.get("billingPeriod", {}).get("startDate"),
+            "billing_period_end": parsed.get("billingPeriod", {}).get("endDate"),
+            "account_number": parsed.get("customerRef"),
+            "meter_number": parsed.get("meterDetails", {}).get("meterNumber")
+        }
+    
+    return {}
 
-            ai = parsed.get("accountInfo", {})
-            bill.gas_accountInfo_accountNumber = ai.get("accountNumber")
-            bill.gas_accountInfo_gprn = ai.get("gprn")
-            bill.gas_accountInfo_meterNumber = ai.get("meterNumber")
-            bill.gas_accountInfo_tariffCategory = ai.get("tariffCategory")
-            bill.gas_accountInfo_paymentMethod = ai.get("paymentMethod")
 
-            bs = parsed.get("billSummary", {})
-            bill.gas_billSummary_invoiceNumber = bs.get("invoiceNumber")
-            bill.gas_billSummary_issueDate = safe_date(bs.get("issueDate"))
-            bill.gas_billSummary_dueDate = safe_date(bs.get("dueDate"))
-            bill.gas_billSummary_billingPeriodStartDate = safe_date(bs.get("billingPeriodStartDate"))
-            bill.gas_billSummary_billingPeriodEndDate = safe_date(bs.get("billingPeriodEndDate"))
-            bill.gas_billSummary_lastBillAmount = bs.get("lastBillAmount")
-            bill.gas_billSummary_paymentReceivedAmount = bs.get("paymentReceivedAmount")
-            bill.gas_billSummary_balanceBroughtForward = bs.get("balanceBroughtForward")
-            bill.gas_billSummary_netBillAmount = bs.get("netBillAmount")
-            bill.gas_billSummary_totalVatAmount = bs.get("totalVatAmount")
-            bill.gas_billSummary_currentBillAmount = bs.get("currentBillAmount")
-            bill.gas_billSummary_totalDueAmount = bs.get("totalDueAmount")
+def get_consumption_by_type(parsed: dict, consumption_type: str) -> float:
+    """Extract consumption value by type (day/night/wattless)"""
+    consumption = parsed.get("consumption", [])
+    for entry in consumption:
+        if entry.get("type", "").lower() == consumption_type:
+            return entry.get("units", {}).get("value")
+    return None
 
-            mr = parsed.get("meterReadings", {})
-            bill.gas_meterReadings_previousReading = mr.get("previousReading")
-            bill.gas_meterReadings_presentReading = mr.get("presentReading")
-            bill.gas_meterReadings_unitsConsumed = mr.get("unitsConsumed")
 
-            cd = parsed.get("consumptionDetails", {})
-            bill.gas_consumptionDetails_consumptionValue = cd.get("consumptionValue")
-            bill.gas_consumptionDetails_consumptionUnit = cd.get("consumptionUnit")
-            bill.gas_consumptionDetails_calibrationValue = cd.get("calibrationValue")
-            bill.gas_consumptionDetails_conversionFactor = cd.get("conversionFactor")
-            bill.gas_consumptionDetails_correctionFactor = cd.get("correctionFactor")
-
-        elif utility_type == "electricity":
-            bill.electricity_supplier = parsed.get("supplier")
-            bill.electricity_customerRef = parsed.get("customerRef")
-            bill.electricity_billingRef = parsed.get("billingRef")
-
-            cust = parsed.get("customer", {})
-            bill.electricity_customer_name = cust.get("name")
-            ca = cust.get("address", {})
-            bill.electricity_customer_address_street = ca.get("street")
-            bill.electricity_customer_address_city = ca.get("city")
-            bill.electricity_customer_address_postalCode = ca.get("postalCode")
-
-            meter = parsed.get("meterDetails", {})
-            bill.electricity_meterDetails_mprn = meter.get("mprn")
-            bill.electricity_meterDetails_meterNumber = meter.get("meterNumber")
-            bill.electricity_meterDetails_meterType = meter.get("meterType")
-            bill.electricity_meterDetails_mic_value = meter.get("mic", {}).get("value")
-            bill.electricity_meterDetails_mic_unit = meter.get("mic", {}).get("unit")
-            bill.electricity_meterDetails_maxDemand_value = meter.get("maxDemand", {}).get("value")
-            bill.electricity_meterDetails_maxDemand_unit = meter.get("maxDemand", {}).get("unit")
-            bill.electricity_meterDetails_maxDemandDate = safe_date(meter.get("maxDemandDate"))
-
-            consumption = parsed.get("consumption", [])
-            for entry in consumption:
-                t = entry.get("type", "").lower()
-                val = entry.get("units", {}).get("value")
-                if t == "day":
-                    bill.electricity_consumption_day_kwh = val
-                elif t == "night":
-                    bill.electricity_consumption_night_kwh = val
-                elif t == "wattless":
-                    bill.electricity_consumption_wattless_kwh = val
-
-            charges = parsed.get("charges", [])
-            for ch in charges:
-                desc = ch.get("description", "").lower()
-                amt = ch.get("amount")
-                if "standing" in desc:
-                    bill.electricity_charge_StandingCharge = amt
-                elif "day units" in desc:
-                    bill.electricity_charge_DayUnits = amt
-                elif "night units" in desc:
-                    bill.electricity_charge_NightUnits = amt
-                elif "low power" in desc:
-                    bill.electricity_charge_LowPowerFactor = amt
-                elif "capacity" in desc:
-                    bill.electricity_charge_CapacityCharge = amt
-                elif "mic excess" in desc:
-                    bill.electricity_charge_MICExcessCharge = amt
-                elif "winter demand" in desc:
-                    bill.electricity_charge_WinterDemandCharge = amt
-                elif "pso levy" in desc:
-                    bill.electricity_charge_PSOLevy = amt
-                elif "electricity tax" in desc:
-                    bill.electricity_charge_ElectricityTax = amt
-
-            tax = parsed.get("taxDetails", {})
-            bill.electricity_taxDetails_vatRate = tax.get("vatRate")
-            bill.electricity_taxDetails_vatAmount = tax.get("vatAmount")
-            bill.electricity_taxDetails_electricityTax_amount = tax.get("electricityTax", {}).get("amount")
-
-            bill.electricity_totalAmount_value = parsed.get("totalAmount", {}).get("value")
-
-            supplier_contact = parsed.get("supplierContact", {})
-            bill.electricity_supplierContact_address = supplier_contact.get("address")
-            phones = supplier_contact.get("phone", [])
-            if isinstance(phones, list):
-                bill.electricity_supplierContact_phone_1 = phones[0] if len(phones) > 0 else None
-                bill.electricity_supplierContact_phone_2 = phones[1] if len(phones) > 1 else None
-            bill.electricity_supplierContact_email = supplier_contact.get("email")
-            bill.electricity_supplierContact_website = supplier_contact.get("website")
-            bill.electricity_supplierContact_vatNumber = supplier_contact.get("vatNumber")
-
-        db.add(bill)
-        db.commit()
-        db.refresh(bill)
-        return bill
-
-    except SQLAlchemyError as e:
-        db.rollback()
-        raise RuntimeError(f"Database error while saving utility bill: {str(e)}")
-
-def safe_date(date_str):
+def get_utility_data_for_hotel_year(hotel_id: str, year: str) -> List[Dict[Any, Any]]:
+    """Get all utility bills for a hotel and year from S3"""
     try:
-        return datetime.strptime(date_str, "%Y-%m-%d").date() if date_str else None
-    except:
-        return None
+        prefix = f"utilities/{hotel_id}/{year}/"
+        
+        response = s3_client.list_objects_v2(
+            Bucket=BUCKET_NAME,
+            Prefix=prefix
+        )
+        
+        bills = []
+        
+        if 'Contents' in response:
+            for obj in response['Contents']:
+                try:
+                    # Get the JSON file
+                    file_response = s3_client.get_object(
+                        Bucket=BUCKET_NAME,
+                        Key=obj['Key']
+                    )
+                    
+                    bill_data = json.loads(file_response['Body'].read())
+                    bills.append(bill_data)
+                    
+                except Exception as e:
+                    print(f"Error reading {obj['Key']}: {e}")
+                    continue
+        
+        # Sort by bill date
+        bills.sort(key=lambda x: x.get("summary", {}).get("bill_date") or "")
+        return bills
+        
+    except Exception as e:
+        print(f"Error fetching utility data: {e}")
+        return []
+
+
+def get_utility_data_for_multiple_hotels(hotel_ids: List[str], year: str) -> Dict[str, List[Dict]]:
+    """Get utility data for multiple hotels for comparison"""
+    result = {}
+    
+    for hotel_id in hotel_ids:
+        result[hotel_id] = get_utility_data_for_hotel_year(hotel_id, year)
+    
+    return result
+
+
+def get_utility_summary_for_comparison(hotel_ids: List[str], year: str) -> List[Dict]:
+    """Get simplified data for hotel comparison charts"""
+    comparison_data = []
+    
+    for hotel_id in hotel_ids:
+        bills = get_utility_data_for_hotel_year(hotel_id, year)
+        
+        # Aggregate by hotel
+        electricity_total = sum(
+            bill["summary"].get("total_cost", 0) or 0 
+            for bill in bills 
+            if bill["utility_type"] == "electricity" and bill["summary"].get("total_cost")
+        )
+        
+        gas_total = sum(
+            bill["summary"].get("total_cost", 0) or 0 
+            for bill in bills 
+            if bill["utility_type"] == "gas" and bill["summary"].get("total_cost")
+        )
+        
+        electricity_kwh = sum(
+            bill["summary"].get("total_kwh", 0) or 0 
+            for bill in bills 
+            if bill["utility_type"] == "electricity" and bill["summary"].get("total_kwh")
+        )
+        
+        gas_kwh = sum(
+            bill["summary"].get("consumption_kwh", 0) or 0 
+            for bill in bills 
+            if bill["utility_type"] == "gas" and bill["summary"].get("consumption_kwh")
+        )
+        
+        comparison_data.append({
+            "hotel_id": hotel_id,
+            "electricity_cost": round(electricity_total, 2),
+            "gas_cost": round(gas_total, 2),
+            "electricity_kwh": round(electricity_kwh, 0),
+            "gas_kwh": round(gas_kwh, 0),
+            "total_cost": round(electricity_total + gas_total, 2),
+            "bill_count": len(bills)
+        })
+    
+    return comparison_data
