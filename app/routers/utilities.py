@@ -9,7 +9,7 @@ import time
 import pdfplumber
 from io import BytesIO
 from app.db.session import get_db, engine
-from app.utils.s3_utils import save_parsed_data_to_s3, get_utility_data_for_hotel_year, get_utility_summary_for_comparison
+from app.utils.s3_utilities import save_parsed_data_to_s3, get_utility_data_for_hotel_year, get_utility_summary_for_comparison  # NEW
 from app.utils.s3 import save_pdf_to_s3
 
 router = APIRouter()
@@ -438,10 +438,15 @@ async def get_utilities_data(hotel_id: str, year: int):
         
         for bill in bills:
             summary = bill.get("summary", {})
+            bill_date = summary.get("bill_date", "")
+            
+            # FILTER: Only include bills from the requested year
+            if not bill_date.startswith(str(year)):
+                continue
             
             if bill["utility_type"] == "electricity":
                 electricity_data.append({
-                    "month": summary.get("bill_date", "")[:7],  # YYYY-MM
+                    "month": bill_date[:7],  # YYYY-MM
                     "day_kwh": summary.get("day_kwh", 0) or 0,
                     "night_kwh": summary.get("night_kwh", 0) or 0,
                     "total_kwh": summary.get("total_kwh", 0) or 0,
@@ -451,7 +456,7 @@ async def get_utilities_data(hotel_id: str, year: int):
             
             elif bill["utility_type"] == "gas":
                 gas_data.append({
-                    "period": summary.get("bill_date", "")[:7],  # YYYY-MM
+                    "period": bill_date[:7],  # YYYY-MM
                     "total_kwh": summary.get("consumption_kwh", 0) or 0,
                     "total_eur": summary.get("total_cost", 0) or 0,
                     "per_room_kwh": (summary.get("consumption_kwh", 0) or 0) / 100  # Adjust room count as needed
