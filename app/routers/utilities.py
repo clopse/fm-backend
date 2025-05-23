@@ -9,8 +9,8 @@ import time
 import pdfplumber
 from io import BytesIO
 from app.db.session import get_db, engine
-from app.db.crud import save_parsed_data_to_db
-from app.utils.s3 import save_json_to_s3, save_pdf_to_s3
+from app.utils.s3_utilities import save_parsed_data_to_s3, get_utility_data_for_hotel_year, get_utility_summary_for_comparison  # NEW
+from app.utils.s3 import save_pdf_to_s3
 
 router = APIRouter()
 
@@ -18,6 +18,19 @@ DOCUPIPE_API_KEY = os.getenv("DOCUPIPE_API_KEY")
 SCHEMA_ELECTRICITY = "3ca991a9"
 SCHEMA_GAS = "33093b4d"  # Fixed: was 33093b44, now 33093b4d
 UPLOAD_WEBHOOK_URL = os.getenv("UPLOAD_WEBHOOK_URL")
+
+@router.post("/utilities/create-table-simple")
+async def create_table_simple():
+    """Create table with single SQL statement - for Render deployment"""
+    try:
+        sql = "CREATE TABLE IF NOT EXISTS utility_bills (id INTEGER PRIMARY KEY AUTOINCREMENT, hotel_id TEXT, gas_supplierInfo_name TEXT, gas_supplierInfo_vatRegNo TEXT, gas_supplierInfo_phoneNumber TEXT, gas_supplierInfo_email TEXT, gas_supplierInfo_address_street TEXT, gas_supplierInfo_address_city TEXT, gas_supplierInfo_address_postalCode TEXT, gas_customerInfo_name TEXT, gas_customerInfo_address_street TEXT, gas_customerInfo_address_city TEXT, gas_customerInfo_address_postalCode TEXT, gas_customerInfo_contactNumber TEXT, gas_accountInfo_accountNumber TEXT, gas_accountInfo_gprn TEXT, gas_accountInfo_meterNumber TEXT, gas_accountInfo_tariffCategory TEXT, gas_accountInfo_paymentMethod TEXT, gas_billSummary_invoiceNumber TEXT, gas_billSummary_issueDate TEXT, gas_billSummary_dueDate TEXT, gas_billSummary_billingPeriodStartDate TEXT, gas_billSummary_billingPeriodEndDate TEXT, gas_billSummary_lastBillAmount REAL, gas_billSummary_paymentReceivedAmount REAL, gas_billSummary_balanceBroughtForward REAL, gas_billSummary_netBillAmount REAL, gas_billSummary_totalVatAmount REAL, gas_billSummary_currentBillAmount REAL, gas_billSummary_totalDueAmount REAL, gas_meterReadings_previousReading REAL, gas_meterReadings_presentReading REAL, gas_meterReadings_unitsConsumed REAL, gas_consumptionDetails_consumptionValue REAL, gas_consumptionDetails_consumptionUnit TEXT, gas_consumptionDetails_calibrationValue REAL, gas_consumptionDetails_conversionFactor REAL, gas_consumptionDetails_correctionFactor REAL, electricity_supplier TEXT, electricity_customerRef TEXT, electricity_billingRef TEXT, electricity_customer_name TEXT, electricity_customer_address_street TEXT, electricity_customer_address_city TEXT, electricity_customer_address_postalCode TEXT, electricity_meterDetails_mprn TEXT, electricity_meterDetails_meterNumber TEXT, electricity_meterDetails_meterType TEXT, electricity_meterDetails_mic_value REAL, electricity_meterDetails_mic_unit TEXT, electricity_meterDetails_maxDemand_value REAL, electricity_meterDetails_maxDemand_unit TEXT, electricity_meterDetails_maxDemandDate TEXT, electricity_consumption_day_kwh REAL, electricity_consumption_night_kwh REAL, electricity_consumption_wattless_kwh REAL, electricity_charge_StandingCharge REAL, electricity_charge_DayUnits REAL, electricity_charge_NightUnits REAL, electricity_charge_LowPowerFactor REAL, electricity_charge_CapacityCharge REAL, electricity_charge_MICExcessCharge REAL, electricity_charge_WinterDemandCharge REAL, electricity_charge_PSOLevy REAL, electricity_charge_ElectricityTax REAL, electricity_taxDetails_vatRate REAL, electricity_taxDetails_vatAmount REAL, electricity_taxDetails_electricityTax_amount REAL, electricity_totalAmount_value REAL, electricity_supplierContact_address TEXT, electricity_supplierContact_phone_1 TEXT, electricity_supplierContact_phone_2 TEXT, electricity_supplierContact_email TEXT, electricity_supplierContact_website TEXT, electricity_supplierContact_vatNumber TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, s3_json_path TEXT)"
+        
+        with engine.connect() as conn:
+            conn.execute(text(sql))
+            conn.commit()
+        return {"message": "Table created successfully!"}
+    except Exception as e:
+        return {"error": str(e)}
 
 # Add this missing endpoint
 @router.post("/utilities/precheck")
@@ -371,11 +384,10 @@ def process_and_store_docupipe(db, content, hotel_id, filename, bill_date, bill_
                         bill_date
                     )
                     
-                    # Save to S3 and database
+                    # Save to S3 only (no database)
                     try:
-                        s3_json_path = save_json_to_s3(parsed, hotel_id, bill_type, billing_start, filename)
+                        s3_json_path = save_parsed_data_to_s3(hotel_id, bill_type, parsed, "", filename)
                         save_pdf_to_s3(content, hotel_id, bill_type, billing_start, filename)
-                        save_parsed_data_to_db(db, hotel_id, bill_type, parsed, s3_json_path)
                         
                         print(f"Successfully saved: {s3_json_path}")
                         
