@@ -20,10 +20,11 @@ from app.routers import (
     confirmations,
     compliance_history,
     compliance_tasks,
-    audit
+    audit,
+    user  # Add the user router
 )
 
-app = FastAPI()
+app = FastAPI(title="JMK Project API", version="1.0.0")
 
 # CORS configuration
 app.add_middleware(
@@ -53,6 +54,9 @@ app.include_router(confirmations.router, prefix="/api/compliance", tags=["confir
 app.include_router(compliance_history.router, prefix="/api/compliance", tags=["compliance-history"])
 app.include_router(compliance_tasks.router, prefix="/api/compliance", tags=["compliance-tasks"])
 app.include_router(audit.router, prefix="/api/compliance", tags=["audit"])
+
+# User management router
+app.include_router(user.router, prefix="/api/users", tags=["users"])
 
 # Base routes
 @app.get("/")
