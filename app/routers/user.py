@@ -1,4 +1,3 @@
-// FILE: app/routers/user.py
 from fastapi import APIRouter, HTTPException, Request, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr
