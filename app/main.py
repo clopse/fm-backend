@@ -1,3 +1,4 @@
+# FILE: main.py
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -39,6 +40,39 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Auto-create admin user on startup
+@app.on_event("startup")
+async def create_admin_user():
+    """Create default admin user if no users exist"""
+    try:
+        from app.routers.user import load_users, save_users, hash_password
+        import uuid
+        from datetime import datetime
+        
+        users = load_users()
+        if not users:  # Only create if no users exist
+            admin_id = str(uuid.uuid4())
+            admin_user = {
+                "name": "System Admin",
+                "email": "admin@jmkhotels.ie",
+                "role": "System Admin",
+                "hotel": "All Hotels",
+                "password": hash_password("admin123"),
+                "status": "Active",
+                "created_at": datetime.now().isoformat(),
+                "last_login": None
+            }
+            users[admin_id] = admin_user
+            save_users(users)
+            print("✅ Admin user created successfully!")
+            print("📧 Email: admin@jmkhotels.ie")
+            print("🔑 Password: admin123")
+            print("⚠️  Please change the password after first login!")
+        else:
+            print(f"ℹ️  Found {len(users)} existing users - skipping admin creation")
+    except Exception as e:
+        print(f"❌ Error creating admin user: {e}")
 
 # Include routers
 app.include_router(utilities.router)  # This gives you /utilities/... endpoints
