@@ -1,3 +1,4 @@
+// FILE: app/routers/user.py
 from fastapi import APIRouter, HTTPException, Request, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr
@@ -5,7 +6,7 @@ from typing import Optional, List
 import json
 import boto3
 import bcrypt
-import jwt
+from jose import jwt
 from datetime import datetime, timedelta
 import uuid
 import os
