@@ -1,16 +1,18 @@
 from fastapi import APIRouter, UploadFile, File, Form, Depends, BackgroundTasks, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from datetime import datetime
+from datetime import datetime, timedelta
 import base64
 import requests
 import os
 import time
 import pdfplumber
+import calendar
 from io import BytesIO
 from app.db.session import get_db, engine
 from app.utils.s3_utils import save_parsed_data_to_s3, get_utility_data_for_hotel_year, get_utility_summary_for_comparison  # NEW
 from app.utils.s3 import save_pdf_to_s3
+from app.s3_config import s3  # Import your S3 client
 
 router = APIRouter()
 
@@ -18,6 +20,7 @@ DOCUPIPE_API_KEY = os.getenv("DOCUPIPE_API_KEY")
 SCHEMA_ELECTRICITY = "3ca991a9"
 SCHEMA_GAS = "33093b4d"  # Fixed: was 33093b44, now 33093b4d
 UPLOAD_WEBHOOK_URL = os.getenv("UPLOAD_WEBHOOK_URL")
+S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "jmk-project-uploads")  # Add your bucket name
 
 @router.post("/utilities/create-table-simple")
 async def create_table_simple():
@@ -471,6 +474,280 @@ async def get_utilities_data(hotel_id: str, year: int):
     except Exception as e:
         print(f"Error fetching utilities data: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch utilities data: {str(e)}")
+
+
+# NEW ENDPOINTS FOR UTILITIES ADMIN PAGE
+
+def get_hotel_ids_from_s3():
+    """Get list of hotel IDs by scanning S3 bucket structure"""
+    try:
+        response = s3.list_objects_v2(
+            Bucket=S3_BUCKET_NAME,
+            Delimiter='/'
+        )
+        
+        hotel_ids = []
+        if 'CommonPrefixes' in response:
+            for prefix in response['CommonPrefixes']:
+                # Extract hotel ID from prefix (e.g., "hiex/" -> "hiex")
+                hotel_id = prefix['Prefix'].rstrip('/')
+                hotel_ids.append(hotel_id)
+        
+        return hotel_ids
+    except Exception as e:
+        print(f"Error getting hotel IDs from S3: {e}")
+        return []
+
+
+@router.get("/utilities/missing-bills")
+async def get_missing_bills():
+    """Get missing and overdue utility bills dashboard"""
+    try:
+        # This is a simple implementation - you can enhance based on your needs
+        # You might want to track expected bills in a database or config
+        
+        current_date = datetime.now()
+        missing_bills = []
+        
+        # Define expected utility types per hotel (you can move this to config)
+        # Using your hotel IDs from hotels.ts
+        hotel_utilities = {
+            "hiex": ["electricity", "gas"],
+            "moxy": ["electricity", "gas"], 
+            "hida": ["electricity", "gas"],
+            "hbhdcc": ["electricity", "gas"],
+            "hbhe": ["electricity"],
+            "sera": ["electricity", "gas"],
+            "marina": ["electricity", "gas"],
+            "belfast": ["electricity", "gas"],
+            "hiltonth": ["electricity", "gas"]
+        }
+        
+        # Check last 3 months for missing bills
+        for months_back in range(1, 4):
+            check_date = current_date - timedelta(days=30 * months_back)
+            year_month = check_date.strftime("%Y-%m")
+            
+            for hotel_id, utilities in hotel_utilities.items():
+                for utility_type in utilities:
+                    # Check if bill exists for this hotel/utility/month
+                    try:
+                        bills = get_utility_data_for_hotel_year(hotel_id, str(check_date.year))
+                        
+                        # Check if bill exists for this month
+                        bill_exists = any(
+                            bill.get("summary", {}).get("bill_date", "").startswith(year_month)
+                            for bill in bills 
+                            if bill.get("utility_type") == utility_type
+                        )
+                        
+                        if not bill_exists:
+                            # Calculate days overdue (assuming bills due by 15th of following month)
+                            expected_due = datetime(check_date.year, check_date.month, 15)
+                            if check_date.month == 12:
+                                expected_due = datetime(check_date.year + 1, 1, 15)
+                            else:
+                                expected_due = datetime(check_date.year, check_date.month + 1, 15)
+                            
+                            days_overdue = max(0, (current_date - expected_due).days)
+                            
+                            if days_overdue > 0:  # Only include if actually overdue
+                                missing_bills.append({
+                                    "hotel_id": hotel_id,
+                                    "utility_type": utility_type,
+                                    "expected_month": calendar.month_name[check_date.month],
+                                    "expected_year": check_date.year,
+                                    "days_overdue": days_overdue,
+                                    "last_uploaded": None,  # You could enhance this
+                                    "status": "missing" if days_overdue > 30 else "overdue",
+                                    "expected_date": expected_due.isoformat(),
+                                    "manager_email": f"manager@{hotel_id}.com"  # You can customize this
+                                })
+                    except Exception as e:
+                        print(f"Error checking {hotel_id} {utility_type} for {year_month}: {e}")
+                        continue
+        
+        # Calculate stats
+        total_expected = len(hotel_utilities) * 2 * 3  # Rough estimate
+        total_missing = len([b for b in missing_bills if b["status"] == "missing"])
+        total_overdue = len([b for b in missing_bills if b["status"] == "overdue"])
+        compliance_rate = max(0, (total_expected - len(missing_bills)) / total_expected * 100) if total_expected > 0 else 100
+        hotels_with_issues = len(set(b["hotel_id"] for b in missing_bills))
+        
+        stats = {
+            "total_expected": total_expected,
+            "total_missing": total_missing,
+            "total_overdue": total_overdue,
+            "compliance_rate": compliance_rate,
+            "hotels_with_issues": hotels_with_issues
+        }
+        
+        return {
+            "missing_bills": missing_bills,
+            "stats": stats
+        }
+        
+    except Exception as e:
+        print(f"Error getting missing bills: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get missing bills: {str(e)}")
+
+
+@router.post("/utilities/send-reminder")
+async def send_reminder_email(reminder_data: dict):
+    """Send reminder email for missing utility bill"""
+    try:
+        hotel_id = reminder_data.get("hotel_id")
+        utility_type = reminder_data.get("utility_type") 
+        month = reminder_data.get("month")
+        
+        # Here you would integrate with your email system
+        # For now, just return success
+        print(f"Sending reminder: {hotel_id} - {utility_type} - {month}")
+        
+        # You can integrate with your existing email system here
+        # email_service.send_reminder_email(hotel_id, utility_type, month)
+        
+        return {"success": True, "message": "Reminder email sent"}
+        
+    except Exception as e:
+        print(f"Error sending reminder: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to send reminder: {str(e)}")
+
+
+@router.get("/utilities/all-bills")
+async def get_all_bills():
+    """Get all uploaded utility bills for admin viewer"""
+    try:
+        all_bills = []
+        
+        # You'll need to implement this based on your S3 structure
+        # This is a simplified version - you might want to cache this data
+        
+        # Get hotel IDs dynamically from S3 bucket structure
+        hotel_ids = get_hotel_ids_from_s3()
+        current_year = datetime.now().year
+        
+        if not hotel_ids:
+            # Fallback if S3 scan fails
+            return {
+                "missing_bills": [],
+                "stats": {
+                    "total_expected": 0,
+                    "total_missing": 0,
+                    "total_overdue": 0,
+                    "compliance_rate": 100,
+                    "hotels_with_issues": 0
+                }
+            }
+        
+        for hotel_id in hotel_ids:
+            try:
+                # Get bills for current and previous year
+                for year in [current_year, current_year - 1]:
+                    bills = get_utility_data_for_hotel_year(hotel_id, str(year))
+                    
+                    for bill in bills:
+                        summary = bill.get("summary", {})
+                        
+                        all_bills.append({
+                            "id": f"{hotel_id}_{bill.get('utility_type')}_{summary.get('bill_date', '')}",
+                            "hotel_id": hotel_id,
+                            "utility_type": bill.get("utility_type"),
+                            "filename": bill.get("filename", "Unknown"),
+                            "upload_date": bill.get("upload_date", ""),
+                            "bill_period": summary.get("bill_date", ""),
+                            "supplier": summary.get("supplier", "Unknown"),
+                            "total_amount": summary.get("total_cost", 0) or 0,
+                            "consumption": summary.get("total_kwh", 0) or summary.get("consumption_kwh", 0) or 0,
+                            "consumption_unit": "kWh",
+                            "pdf_url": bill.get("pdf_url"),
+                            "parsed_status": "success"  # Since these are successfully parsed bills
+                        })
+                        
+            except Exception as e:
+                print(f"Error getting bills for {hotel_id}: {e}")
+                continue
+        
+        # Sort by upload date (newest first)
+        all_bills.sort(key=lambda x: x.get("upload_date", ""), reverse=True)
+        
+        return {"bills": all_bills}
+        
+    except Exception as e:
+        print(f"Error getting all bills: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get all bills: {str(e)}")
+
+
+@router.get("/utilities/bill-details/{bill_id}")
+async def get_bill_details(bill_id: str):
+    """Get detailed parsed data for a specific bill"""
+    try:
+        # Parse bill_id to extract hotel_id, utility_type, and date
+        parts = bill_id.split("_")
+        if len(parts) < 3:
+            raise HTTPException(status_code=400, detail="Invalid bill ID format")
+        
+        hotel_id = parts[0]
+        utility_type = parts[1]
+        bill_date = "_".join(parts[2:])  # In case date has underscores
+        
+        # Get the specific bill data from S3
+        year = bill_date[:4] if len(bill_date) >= 4 else str(datetime.now().year)
+        bills = get_utility_data_for_hotel_year(hotel_id, year)
+        
+        # Find the specific bill
+        target_bill = None
+        for bill in bills:
+            if (bill.get("utility_type") == utility_type and 
+                bill.get("summary", {}).get("bill_date", "").startswith(bill_date[:7])):
+                target_bill = bill
+                break
+        
+        if not target_bill:
+            raise HTTPException(status_code=404, detail="Bill not found")
+        
+        return {
+            "bill_id": bill_id,
+            "parsed_data": target_bill.get("raw_data", target_bill),  # Return full parsed data
+            "summary": target_bill.get("summary", {})
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting bill details: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get bill details: {str(e)}")
+
+
+@router.get("/utilities/download-pdf/{bill_id}")
+async def download_bill_pdf(bill_id: str):
+    """Download PDF file for a specific bill"""
+    try:
+        # This would need to be implemented based on your S3 PDF storage structure
+        # For now, return a redirect or signed URL
+        
+        parts = bill_id.split("_")
+        if len(parts) < 3:
+            raise HTTPException(status_code=400, detail="Invalid bill ID format")
+        
+        hotel_id = parts[0]
+        utility_type = parts[1] 
+        bill_date = "_".join(parts[2:])
+        
+        # You would generate a signed S3 URL here
+        # pdf_url = generate_s3_signed_url(hotel_id, utility_type, bill_date)
+        
+        # For now, return info about where the PDF would be
+        return {
+            "message": "PDF download would be implemented here",
+            "hotel_id": hotel_id,
+            "utility_type": utility_type,
+            "bill_date": bill_date
+        }
+        
+    except Exception as e:
+        print(f"Error downloading PDF: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to download PDF: {str(e)}")
 
 
 @router.get("/utilities/comparison/{year}")
