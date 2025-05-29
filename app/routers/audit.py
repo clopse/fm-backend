@@ -84,9 +84,9 @@ def update_audit_trail(hotel_id: str, task_id: str, timestamp: str, action: str,
 
 
 def sync_pending_uploads_to_audit_trail():
-    """Sync pending uploads from approval_log to audit_trail"""
+    """Sync pending uploads from approval_log to audit_trail AND ensure all hotel history files are captured"""
+    # Load current approval log (pending items)
     try:
-        # Load current approval log (pending items)
         obj = s3.get_object(Bucket=BUCKET_NAME, Key=APPROVAL_LOG_KEY)
         approval_log = json.loads(obj["Body"].read().decode("utf-8"))
     except s3.exceptions.NoSuchKey:
@@ -115,6 +115,67 @@ def sync_pending_uploads_to_audit_trail():
                 "type": "upload"
             }
             new_entries.append(audit_entry)
+    
+    # IMPORTANT: Also scan individual hotel history files for approved/rejected entries
+    # This captures files that were processed before the audit trail system existed
+    try:
+        # List all hotel history files
+        paginator = s3.get_paginator('list_objects_v2')
+        for page in paginator.paginate(Bucket=BUCKET_NAME, Prefix="logs/compliance-history/"):
+            for obj in page.get('Contents', []):
+                key = obj['Key']
+                # Skip if not a hotel history file (avoid approval_log.json and audit_trail.json)
+                if not key.endswith('.json') or key.endswith('approval_log.json') or key.endswith('audit_trail.json'):
+                    continue
+                
+                try:
+                    # Load the hotel history file
+                    hotel_obj = s3.get_object(Bucket=BUCKET_NAME, Key=key)
+                    hotel_history = json.loads(hotel_obj["Body"].read().decode("utf-8"))
+                    
+                    # Extract hotel_id from filename
+                    hotel_id = key.split('/')[-1].replace('.json', '')
+                    
+                    # Process each task's history in this hotel file
+                    for task_id, task_entries in hotel_history.items():
+                        if isinstance(task_entries, list):
+                            for entry in task_entries:
+                                entry_key = f"{hotel_id}_{task_id}_{entry.get('uploaded_at')}"
+                                
+                                if entry_key not in existing_entries and entry.get('uploaded_at'):
+                                    # Determine status from the entry
+                                    if entry.get('approved'):
+                                        status = 'approved'
+                                    elif entry.get('rejected') or entry.get('rejection_reason'):
+                                        status = 'rejected'
+                                    else:
+                                        status = 'pending'
+                                    
+                                    # Add to audit trail
+                                    audit_entry = {
+                                        "hotel_id": hotel_id,
+                                        "task_id": task_id,
+                                        "fileUrl": entry.get('fileUrl'),
+                                        "filename": entry.get('filename'),
+                                        "reportDate": entry.get('reportDate') or entry.get('report_date'),
+                                        "uploadedAt": entry.get('uploaded_at'),
+                                        "uploaded_by": entry.get('uploaded_by'),
+                                        "status": status,
+                                        "approved": entry.get('approved', False),
+                                        "type": "upload",
+                                        "reviewed_at": entry.get('reviewed_at'),
+                                        "reviewed_by": entry.get('reviewed_by'),
+                                        "rejection_reason": entry.get('rejection_reason')
+                                    }
+                                    new_entries.append(audit_entry)
+                                    existing_entries.add(entry_key)
+                
+                except Exception as e:
+                    print(f"Error processing hotel history file {key}: {e}")
+                    continue
+    
+    except Exception as e:
+        print(f"Error scanning hotel history files: {e}")
     
     if new_entries:
         audit_trail.extend(new_entries)
@@ -157,7 +218,7 @@ async def approve_upload(request: Request):
     timestamp = data.get("timestamp")
     performed_by = data.get("performed_by", "admin")
 
-    # Update the individual hotel history file (KEEP EXISTING LOGIC)
+    # STEP 1: Update the individual hotel history file (KEEP EXISTING LOGIC)
     history = load_compliance_history(hotel_id)
     entries = history.get(task_id, [])
     found = False
@@ -175,14 +236,60 @@ async def approve_upload(request: Request):
 
     save_compliance_history(hotel_id, history)
     
-    # NEW: Update the audit trail to maintain permanent record
+    # STEP 2: Update the audit trail (FIXED - ensure this actually works)
     try:
-        updated_entry = update_audit_trail(hotel_id, task_id, timestamp, "approved", performed_by=performed_by)
-    except HTTPException:
-        # If not in audit trail yet, that's ok - the old system will still work
-        updated_entry = None
+        trail = load_audit_trail()
+        trail_updated = False
+        
+        # Find and update the entry in audit trail
+        for trail_entry in trail:
+            if (trail_entry.get("hotel_id") == hotel_id and 
+                trail_entry.get("task_id") == task_id and 
+                trail_entry.get("uploadedAt") == timestamp):
+                
+                trail_entry["status"] = "approved"
+                trail_entry["reviewed_at"] = datetime.now().isoformat()
+                trail_entry["reviewed_by"] = performed_by
+                trail_entry["approved"] = True
+                trail_updated = True
+                break
+        
+        # If not found in trail, add it (this handles the case where it wasn't synced yet)
+        if not trail_updated:
+            # Find the entry from hotel history that we just updated
+            approved_entry = None
+            for entry in entries:
+                if entry.get("uploaded_at") == timestamp:
+                    approved_entry = entry
+                    break
+            
+            if approved_entry:
+                # Add to audit trail
+                new_trail_entry = {
+                    "hotel_id": hotel_id,
+                    "task_id": task_id,
+                    "fileUrl": approved_entry.get('fileUrl'),
+                    "filename": approved_entry.get('filename'),
+                    "reportDate": approved_entry.get('reportDate') or approved_entry.get('report_date'),
+                    "uploadedAt": approved_entry.get('uploaded_at'),
+                    "uploaded_by": approved_entry.get('uploaded_by'),
+                    "status": "approved",
+                    "approved": True,
+                    "type": "upload",
+                    "reviewed_at": datetime.now().isoformat(),
+                    "reviewed_by": performed_by
+                }
+                trail.append(new_trail_entry)
+        
+        # Save the updated audit trail
+        save_audit_trail(trail)
+        
+    except Exception as e:
+        print(f"Error updating audit trail: {e}")
+        # Don't fail the whole operation if audit trail update fails
+        pass
     
-    # KEEP EXISTING: Remove from pending approval log
+    # STEP 3: Remove from pending approval log (KEEP EXISTING)
     try:
         obj = s3.get_object(Bucket=BUCKET_NAME, Key=APPROVAL_LOG_KEY)
         approval_log = json.loads(obj["Body"].read().decode("utf-8"))
