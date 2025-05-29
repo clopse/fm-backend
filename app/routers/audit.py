@@ -588,3 +588,22 @@ async def get_audit_stats():
     }
     
     return stats
+
+@router.get("/history/debug")
+async def debug_audit_system():
+    try:
+        # Test creating audit trail
+        try:
+            test_trail = [{"test": "entry", "created_at": datetime.now().isoformat()}]
+            save_audit_trail(test_trail)
+            create_test = "SUCCESS - audit_trail.json created"
+        except Exception as e:
+            create_test = f"FAILED: {str(e)}"
+        
+        return {
+            "create_test": create_test,
+            "bucket": BUCKET_NAME,
+            "audit_key": AUDIT_TRAIL_KEY
+        }
+    except Exception as e:
+        return {"error": str(e)}
