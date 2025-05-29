@@ -57,104 +57,108 @@ def save_audit_trail(trail: List[Dict[str, Any]]):
 
 
 def sync_pending_uploads_to_audit_trail():
-    """Sync pending uploads from approval_log to audit_trail AND ensure all hotel history files are captured"""
-    # Load current approval log (pending items)
-    try:
-        obj = s3.get_object(Bucket=BUCKET_NAME, Key=APPROVAL_LOG_KEY)
-        approval_log = json.loads(obj["Body"].read().decode("utf-8"))
-    except s3.exceptions.NoSuchKey:
-        approval_log = []
-    
+    """Sync and deduplicate all entries in audit trail"""
     # Load current audit trail
     audit_trail = load_audit_trail()
     
-    # Create a set of existing entries for quick lookup
-    existing_entries = set()
+    # Create a comprehensive deduplication map
+    # Key format: hotel_id_task_id_uploaded_at -> latest_entry
+    entries_map = {}
+    
+    # First, process existing audit trail entries
     for entry in audit_trail:
-        key = f"{entry.get('hotel_id')}_{entry.get('task_id')}_{entry.get('uploaded_at')}"
-        existing_entries.add(key)
-    
-    # Add new pending entries to audit trail
-    new_entries = []
-    for pending_entry in approval_log:
-        key = f"{pending_entry.get('hotel_id')}_{pending_entry.get('task_id')}_{pending_entry.get('uploaded_at')}"
+        uploaded_at = entry.get('uploadedAt') or entry.get('uploaded_at')
+        key = f"{entry.get('hotel_id')}_{entry.get('task_id')}_{uploaded_at}"
         
-        if key not in existing_entries:
-            # Add to audit trail with pending status
-            audit_entry = {
-                **pending_entry,
-                "status": "pending",
-                "approved": False,
-                "type": "upload"
-            }
-            new_entries.append(audit_entry)
+        # Keep the most recent or most processed entry (approved/rejected over pending)
+        if key not in entries_map:
+            entries_map[key] = entry
+        else:
+            current = entries_map[key]
+            current_status = current.get('status', 'pending')
+            new_status = entry.get('status', 'pending')
+            
+            # Priority: approved/rejected > pending
+            if current_status == 'pending' and new_status in ['approved', 'rejected']:
+                entries_map[key] = entry
+            elif current_status == new_status and entry.get('reviewed_at'):
+                # If same status, prefer the one with review timestamp
+                entries_map[key] = entry
     
-    # IMPORTANT: Also scan individual hotel history files for approved/rejected entries
-    # This captures files that were processed before the audit trail system existed
+    # Now scan hotel history files for any missing entries
     try:
-        # List all hotel history files
         paginator = s3.get_paginator('list_objects_v2')
         for page in paginator.paginate(Bucket=BUCKET_NAME, Prefix="logs/compliance-history/"):
             for obj in page.get('Contents', []):
-                key = obj['Key']
-                # Skip if not a hotel history file (avoid approval_log.json and audit_trail.json)
-                if not key.endswith('.json') or key.endswith('approval_log.json') or key.endswith('audit_trail.json'):
+                s3_key = obj['Key']
+                # Skip if not a hotel history file
+                if not s3_key.endswith('.json') or s3_key.endswith('approval_log.json') or s3_key.endswith('audit_trail.json'):
                     continue
                 
                 try:
-                    # Load the hotel history file
-                    hotel_obj = s3.get_object(Bucket=BUCKET_NAME, Key=key)
+                    hotel_obj = s3.get_object(Bucket=BUCKET_NAME, Key=s3_key)
                     hotel_history = json.loads(hotel_obj["Body"].read().decode("utf-8"))
+                    hotel_id = s3_key.split('/')[-1].replace('.json', '')
                     
-                    # Extract hotel_id from filename
-                    hotel_id = key.split('/')[-1].replace('.json', '')
-                    
-                    # Process each task's history in this hotel file
                     for task_id, task_entries in hotel_history.items():
                         if isinstance(task_entries, list):
                             for entry in task_entries:
-                                entry_key = f"{hotel_id}_{task_id}_{entry.get('uploaded_at')}"
-                                
-                                if entry_key not in existing_entries and entry.get('uploaded_at'):
-                                    # Determine status from the entry
-                                    if entry.get('approved'):
-                                        status = 'approved'
-                                    elif entry.get('rejected') or entry.get('rejection_reason'):
-                                        status = 'rejected'
-                                    else:
-                                        status = 'pending'
+                                uploaded_at = entry.get('uploaded_at')
+                                if not uploaded_at:
+                                    continue
                                     
-                                    # Add to audit trail
-                                    audit_entry = {
-                                        "hotel_id": hotel_id,
-                                        "task_id": task_id,
-                                        "fileUrl": entry.get('fileUrl'),
-                                        "filename": entry.get('filename'),
-                                        "reportDate": entry.get('reportDate') or entry.get('report_date'),
-                                        "uploadedAt": entry.get('uploaded_at'),
-                                        "uploaded_by": entry.get('uploaded_by'),
-                                        "status": status,
-                                        "approved": entry.get('approved', False),
-                                        "type": "upload",
-                                        "reviewed_at": entry.get('reviewed_at'),
-                                        "reviewed_by": entry.get('reviewed_by'),
-                                        "rejection_reason": entry.get('rejection_reason')
-                                    }
-                                    new_entries.append(audit_entry)
-                                    existing_entries.add(entry_key)
+                                entry_key = f"{hotel_id}_{task_id}_{uploaded_at}"
+                                
+                                # Determine status
+                                if entry.get('approved'):
+                                    status = 'approved'
+                                elif entry.get('rejected') or entry.get('rejection_reason'):
+                                    status = 'rejected'
+                                else:
+                                    status = 'pending'
+                                
+                                # Create standardized entry
+                                standardized_entry = {
+                                    "hotel_id": hotel_id,
+                                    "task_id": task_id,
+                                    "fileUrl": entry.get('fileUrl'),
+                                    "filename": entry.get('filename'),
+                                    "reportDate": entry.get('reportDate') or entry.get('report_date'),
+                                    "uploadedAt": uploaded_at,
+                                    "uploaded_by": entry.get('uploaded_by'),
+                                    "status": status,
+                                    "approved": entry.get('approved', False),
+                                    "type": "upload",
+                                    "reviewed_at": entry.get('reviewed_at'),
+                                    "reviewed_by": entry.get('reviewed_by'),
+                                    "rejection_reason": entry.get('rejection_reason')
+                                }
+                                
+                                # Add or update with priority logic
+                                if entry_key not in entries_map:
+                                    entries_map[entry_key] = standardized_entry
+                                else:
+                                    current = entries_map[entry_key]
+                                    current_status = current.get('status', 'pending')
+                                    
+                                    # Priority: approved/rejected > pending
+                                    if current_status == 'pending' and status in ['approved', 'rejected']:
+                                        entries_map[entry_key] = standardized_entry
+                                    elif current_status == status and entry.get('reviewed_at'):
+                                        entries_map[entry_key] = standardized_entry
                 
                 except Exception as e:
-                    print(f"Error processing hotel history file {key}: {e}")
+                    print(f"Error processing hotel file {s3_key}: {e}")
                     continue
     
     except Exception as e:
-        print(f"Error scanning hotel history files: {e}")
+        print(f"Error scanning hotel files: {e}")
     
-    if new_entries:
-        audit_trail.extend(new_entries)
-        save_audit_trail(audit_trail)
+    # Convert back to list and save
+    deduplicated_trail = list(entries_map.values())
+    save_audit_trail(deduplicated_trail)
     
-    return len(new_entries)
+    return len(deduplicated_trail)
 
 
 # IMPORTANT: DEBUG ENDPOINT MUST BE FIRST (before any /history/{hotel_id} pattern)
@@ -178,6 +182,22 @@ async def debug_audit_system():
         return {"error": str(e)}
 
 
+@router.post("/history/cleanup-duplicates")
+async def cleanup_duplicate_entries():
+    """Manual cleanup to remove duplicate entries from audit trail"""
+    try:
+        # This will deduplicate everything
+        count = sync_pending_uploads_to_audit_trail()
+        
+        return {
+            "success": True,
+            "message": f"Cleanup completed - {count} unique entries remain",
+            "total_entries": count
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Cleanup failed: {str(e)}")
+
+
 # SPECIFIC ENDPOINTS (before generic /history/{hotel_id})
 @router.get("/history/pending")
 async def get_pending_approvals():
@@ -185,9 +205,12 @@ async def get_pending_approvals():
     # First sync any new pending uploads
     sync_pending_uploads_to_audit_trail()
     
-    # Return only pending entries for admin dashboard
+    # Return only TRULY pending entries (not approved or rejected)
     trail = load_audit_trail()
-    pending_entries = [entry for entry in trail if entry.get("status") == "pending"]
+    pending_entries = [
+        entry for entry in trail 
+        if entry.get("status") == "pending" and not entry.get("approved") and not entry.get("rejected")
+    ]
     
     return {"entries": pending_entries}
 
