@@ -56,33 +56,6 @@ def save_audit_trail(trail: List[Dict[str, Any]]):
     )
 
 
-def update_audit_trail(hotel_id: str, task_id: str, timestamp: str, action: str, reason: str = None, performed_by: str = "admin"):
-    """Update the audit trail with approval/rejection status"""
-    trail = load_audit_trail()
-    
-    # Find the entry to update
-    for entry in trail:
-        if (entry.get("hotel_id") == hotel_id and 
-            entry.get("task_id") == task_id and 
-            entry.get("uploaded_at") == timestamp):
-            
-            # Update the entry with audit information
-            entry["status"] = action  # 'approved', 'rejected', 'pending'
-            entry["reviewed_at"] = datetime.now().isoformat()
-            entry["reviewed_by"] = performed_by
-            entry["approved"] = (action == "approved")
-            
-            if reason:
-                entry["rejection_reason"] = reason
-            
-            save_audit_trail(trail)
-            return entry
-    
-    # If entry not found in audit trail, it might be a new upload
-    # This shouldn't happen in normal flow, but let's handle it
-    raise HTTPException(status_code=404, detail="Entry not found in audit trail")
-
-
 def sync_pending_uploads_to_audit_trail():
     """Sync pending uploads from approval_log to audit_trail AND ensure all hotel history files are captured"""
     # Load current approval log (pending items)
@@ -184,7 +157,28 @@ def sync_pending_uploads_to_audit_trail():
     return len(new_entries)
 
 
-# NEW ENDPOINT: For admin dashboard - only pending files
+# IMPORTANT: DEBUG ENDPOINT MUST BE FIRST (before any /history/{hotel_id} pattern)
+@router.get("/history/debug")
+async def debug_audit_system():
+    try:
+        # Test creating audit trail
+        try:
+            test_trail = [{"test": "entry", "created_at": datetime.now().isoformat()}]
+            save_audit_trail(test_trail)
+            create_test = "SUCCESS - audit_trail.json created"
+        except Exception as e:
+            create_test = f"FAILED: {str(e)}"
+        
+        return {
+            "create_test": create_test,
+            "bucket": BUCKET_NAME,
+            "audit_key": AUDIT_TRAIL_KEY
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# SPECIFIC ENDPOINTS (before generic /history/{hotel_id})
 @router.get("/history/pending")
 async def get_pending_approvals():
     """Get only pending audit entries - FOR ADMIN DASHBOARD"""
@@ -198,7 +192,6 @@ async def get_pending_approvals():
     return {"entries": pending_entries}
 
 
-# EXISTING ENDPOINT: For audit page - full history
 @router.get("/history/approval-log")
 async def get_approval_log():
     """Get all audit entries (pending, approved, rejected) from the audit trail - FOR AUDIT PAGE"""
@@ -210,6 +203,21 @@ async def get_approval_log():
     return {"entries": trail}
 
 
+@router.get("/history/stats")
+async def get_audit_stats():
+    """Get audit statistics"""
+    trail = load_audit_trail()
+    
+    stats = {
+        "total": len(trail),
+        "pending": len([e for e in trail if e.get("status") == "pending"]),
+        "approved": len([e for e in trail if e.get("status") == "approved"]),
+        "rejected": len([e for e in trail if e.get("status") == "rejected"])
+    }
+    
+    return stats
+
+
 @router.post("/history/approve")
 async def approve_upload(request: Request):
     data = await request.json()
@@ -218,7 +226,7 @@ async def approve_upload(request: Request):
     timestamp = data.get("timestamp")
     performed_by = data.get("performed_by", "admin")
 
-    # STEP 1: Update the individual hotel history file (KEEP EXISTING LOGIC)
+    # STEP 1: Update the individual hotel history file
     history = load_compliance_history(hotel_id)
     entries = history.get(task_id, [])
     found = False
@@ -236,7 +244,7 @@ async def approve_upload(request: Request):
 
     save_compliance_history(hotel_id, history)
     
-    # STEP 2: Update the audit trail (FIXED - ensure this actually works)
+    # STEP 2: Update the audit trail
     try:
         trail = load_audit_trail()
         trail_updated = False
@@ -254,7 +262,7 @@ async def approve_upload(request: Request):
                 trail_updated = True
                 break
         
-        # If not found in trail, add it (this handles the case where it wasn't synced yet)
+        # If not found in trail, add it
         if not trail_updated:
             # Find the entry from hotel history that we just updated
             approved_entry = None
@@ -289,7 +297,7 @@ async def approve_upload(request: Request):
         # Don't fail the whole operation if audit trail update fails
         pass
     
-    # STEP 3: Remove from pending approval log (KEEP EXISTING)
+    # STEP 3: Remove from pending approval log
     try:
         obj = s3.get_object(Bucket=BUCKET_NAME, Key=APPROVAL_LOG_KEY)
         approval_log = json.loads(obj["Body"].read().decode("utf-8"))
@@ -321,25 +329,46 @@ async def reject_upload(request: Request):
     reason = data.get("reason", "No reason given")
     performed_by = data.get("performed_by", "admin")
 
-    # KEEP EXISTING LOGIC: Update hotel history
+    # Update hotel history - mark as rejected instead of deleting
     history = load_compliance_history(hotel_id)
     entries = history.get(task_id, [])
-    filtered = [e for e in entries if e.get("uploaded_at") != timestamp]
-
-    if len(filtered) == len(entries):
+    found = False
+    
+    for entry in entries:
+        if entry.get("uploaded_at") == timestamp:
+            entry["approved"] = False
+            entry["rejected"] = True
+            entry["rejection_reason"] = reason
+            entry["reviewed_at"] = datetime.now().isoformat()
+            entry["reviewed_by"] = performed_by
+            found = True
+            break
+    
+    if not found:
         raise HTTPException(status_code=404, detail="Entry not found")
-
-    history[task_id] = filtered
+    
     save_compliance_history(hotel_id, history)
     
-    # NEW: Update audit trail to maintain permanent record
+    # Update audit trail
     try:
-        update_audit_trail(hotel_id, task_id, timestamp, "rejected", reason=reason, performed_by=performed_by)
-    except HTTPException:
-        # If not in audit trail yet, that's ok - the old system will still work
-        pass
+        trail = load_audit_trail()
+        for trail_entry in trail:
+            if (trail_entry.get("hotel_id") == hotel_id and 
+                trail_entry.get("task_id") == task_id and 
+                trail_entry.get("uploadedAt") == timestamp):
+                
+                trail_entry["status"] = "rejected"
+                trail_entry["reviewed_at"] = datetime.now().isoformat()
+                trail_entry["reviewed_by"] = performed_by
+                trail_entry["approved"] = False
+                trail_entry["rejection_reason"] = reason
+                break
+        
+        save_audit_trail(trail)
+    except Exception as e:
+        print(f"Error updating audit trail: {e}")
     
-    # KEEP EXISTING: Remove from pending approval log
+    # Remove from pending approval log
     try:
         obj = s3.get_object(Bucket=BUCKET_NAME, Key=APPROVAL_LOG_KEY)
         approval_log = json.loads(obj["Body"].read().decode("utf-8"))
@@ -369,169 +398,6 @@ async def delete_upload(request: Request):
     task_id = data.get("task_id")
     timestamp = data.get("timestamp")
 
-    # KEEP EXISTING LOGIC
-    history = load_compliance_history(hotel_id)
-    entries = history.get(task_id, [])
-    filtered = [e for e in entries if e.get("uploaded_at") != timestamp]
-
-    if len(filtered) == len(entries):
-        raise HTTPException(status_code=404, detail="Entry not found")
-
-    history[task_id] = filtered
-    save_compliance_history(hotel_id, history)
-    
-    # NEW: Remove from audit trail too
-    try:
-        trail = load_audit_trail()
-        trail = [e for e in trail if not (
-            e.get("hotel_id") == hotel_id and
-            e.get("task_id") == task_id and
-            e.get("uploaded_at") == timestamp
-        )]
-        save_audit_trail(trail)
-    except Exception:
-        pass  # If audit trail doesn't exist yet, that's ok
-    
-    # KEEP EXISTING: Remove from pending approval log
-    try:
-        obj = s3.get_object(Bucket=BUCKET_NAME, Key=APPROVAL_LOG_KEY)
-        approval_log = json.loads(obj["Body"].read().decode("utf-8"))
-        
-        approval_log = [e for e in approval_log if not (
-            e.get("hotel_id") == hotel_id and
-            e.get("task_id") == task_id and
-            e.get("uploaded_at") == timestamp
-        )]
-        
-        s3.put_object(
-            Bucket=BUCKET_NAME,
-            Key=APPROVAL_LOG_KEY,
-            Body=json.dumps(approval_log, indent=2),
-            ContentType="application/json"
-        )
-    except s3.exceptions.NoSuchKey:
-        pass
-
-    return {"success": True, "message": "Deleted"}
-
-
-@router.post("/history/approve")
-async def approve_upload(request: Request):
-    data = await request.json()
-    hotel_id = data.get("hotel_id")
-    task_id = data.get("task_id")
-    timestamp = data.get("timestamp")
-    performed_by = data.get("performed_by", "admin")  # Get from auth context in real app
-
-    # Update the individual hotel history file
-    history = load_compliance_history(hotel_id)
-    entries = history.get(task_id, [])
-    found = False
-
-    for entry in entries:
-        if entry.get("uploaded_at") == timestamp:
-            entry["approved"] = True
-            entry["reviewed_at"] = datetime.now().isoformat()
-            entry["reviewed_by"] = performed_by
-            found = True
-            break
-
-    if not found:
-        raise HTTPException(status_code=404, detail="Entry not found in hotel history")
-
-    # Save updated hotel history
-    save_compliance_history(hotel_id, history)
-    
-    # Update the audit trail (this maintains the permanent record)
-    updated_entry = update_audit_trail(hotel_id, task_id, timestamp, "approved", performed_by=performed_by)
-    
-    # Remove from pending approval log since it's now processed
-    try:
-        obj = s3.get_object(Bucket=BUCKET_NAME, Key=APPROVAL_LOG_KEY)
-        approval_log = json.loads(obj["Body"].read().decode("utf-8"))
-        
-        # Remove the processed entry
-        approval_log = [e for e in approval_log if not (
-            e.get("hotel_id") == hotel_id and
-            e.get("task_id") == task_id and
-            e.get("uploaded_at") == timestamp
-        )]
-        
-        s3.put_object(
-            Bucket=BUCKET_NAME,
-            Key=APPROVAL_LOG_KEY,
-            Body=json.dumps(approval_log, indent=2),
-            ContentType="application/json"
-        )
-    except s3.exceptions.NoSuchKey:
-        pass  # No approval log exists
-    
-    return {"success": True, "message": "Approved", "entry": updated_entry}
-
-
-@router.post("/history/reject")
-async def reject_upload(request: Request):
-    data = await request.json()
-    hotel_id = data.get("hotel_id")
-    task_id = data.get("task_id")
-    timestamp = data.get("timestamp")
-    reason = data.get("reason", "No reason given")
-    performed_by = data.get("performed_by", "admin")
-
-    # Update the audit trail (this maintains the permanent record)
-    updated_entry = update_audit_trail(hotel_id, task_id, timestamp, "rejected", reason=reason, performed_by=performed_by)
-    
-    # Optionally remove from hotel history (or mark as rejected)
-    history = load_compliance_history(hotel_id)
-    entries = history.get(task_id, [])
-    
-    # Option 1: Remove rejected entries from hotel history
-    # filtered = [e for e in entries if e.get("uploaded_at") != timestamp]
-    # history[task_id] = filtered
-    
-    # Option 2: Mark as rejected in hotel history (recommended)
-    for entry in entries:
-        if entry.get("uploaded_at") == timestamp:
-            entry["approved"] = False
-            entry["rejected"] = True
-            entry["rejection_reason"] = reason
-            entry["reviewed_at"] = datetime.now().isoformat()
-            entry["reviewed_by"] = performed_by
-            break
-    
-    save_compliance_history(hotel_id, history)
-    
-    # Remove from pending approval log
-    try:
-        obj = s3.get_object(Bucket=BUCKET_NAME, Key=APPROVAL_LOG_KEY)
-        approval_log = json.loads(obj["Body"].read().decode("utf-8"))
-        
-        approval_log = [e for e in approval_log if not (
-            e.get("hotel_id") == hotel_id and
-            e.get("task_id") == task_id and
-            e.get("uploaded_at") == timestamp
-        )]
-        
-        s3.put_object(
-            Bucket=BUCKET_NAME,
-            Key=APPROVAL_LOG_KEY,
-            Body=json.dumps(approval_log, indent=2),
-            ContentType="application/json"
-        )
-    except s3.exceptions.NoSuchKey:
-        pass
-
-    return {"success": True, "message": f"Rejected: {reason}", "entry": updated_entry}
-
-
-@router.delete("/history/delete")
-async def delete_upload(request: Request):
-    data = await request.json()
-    hotel_id = data.get("hotel_id")
-    task_id = data.get("task_id")
-    timestamp = data.get("timestamp")
-    performed_by = data.get("performed_by", "admin")
-
     # Remove from hotel history
     history = load_compliance_history(hotel_id)
     entries = history.get(task_id, [])
@@ -543,14 +409,17 @@ async def delete_upload(request: Request):
     history[task_id] = filtered
     save_compliance_history(hotel_id, history)
     
-    # Mark as deleted in audit trail (or remove completely)
-    trail = load_audit_trail()
-    trail = [e for e in trail if not (
-        e.get("hotel_id") == hotel_id and
-        e.get("task_id") == task_id and
-        e.get("uploaded_at") == timestamp
-    )]
-    save_audit_trail(trail)
+    # Remove from audit trail
+    try:
+        trail = load_audit_trail()
+        trail = [e for e in trail if not (
+            e.get("hotel_id") == hotel_id and
+            e.get("task_id") == task_id and
+            e.get("uploaded_at") == timestamp
+        )]
+        save_audit_trail(trail)
+    except Exception:
+        pass
     
     # Remove from pending approval log
     try:
@@ -575,35 +444,12 @@ async def delete_upload(request: Request):
     return {"success": True, "message": "Deleted"}
 
 
-@router.get("/history/stats")
-async def get_audit_stats():
-    """Get audit statistics"""
-    trail = load_audit_trail()
-    
-    stats = {
-        "total": len(trail),
-        "pending": len([e for e in trail if e.get("status") == "pending"]),
-        "approved": len([e for e in trail if e.get("status") == "approved"]),
-        "rejected": len([e for e in trail if e.get("status") == "rejected"])
+# GENERIC ENDPOINT MUST BE LAST (matches /history/{anything})
+@router.get("/history/{hotel_id}")
+async def get_hotel_history(hotel_id: str):
+    """Get compliance history for a specific hotel"""
+    history = load_compliance_history(hotel_id)
+    return {
+        "hotel_id": hotel_id,
+        "history": history
     }
-    
-    return stats
-
-@router.get("/history/debug")
-async def debug_audit_system():
-    try:
-        # Test creating audit trail
-        try:
-            test_trail = [{"test": "entry", "created_at": datetime.now().isoformat()}]
-            save_audit_trail(test_trail)
-            create_test = "SUCCESS - audit_trail.json created"
-        except Exception as e:
-            create_test = f"FAILED: {str(e)}"
-        
-        return {
-            "create_test": create_test,
-            "bucket": BUCKET_NAME,
-            "audit_key": AUDIT_TRAIL_KEY
-        }
-    except Exception as e:
-        return {"error": str(e)}
