@@ -123,17 +123,7 @@ def sync_pending_uploads_to_audit_trail():
     return len(new_entries)
 
 
-@router.get("/history/approval-log")
-async def get_approval_log():
-    """Get all audit entries (pending, approved, rejected) from the audit trail - FOR AUDIT PAGE"""
-    # First sync any new pending uploads
-    sync_pending_uploads_to_audit_trail()
-    
-    # Return the complete audit trail for the audit page
-    trail = load_audit_trail()
-    return {"entries": trail}
-
-
+# NEW ENDPOINT: For admin dashboard - only pending files
 @router.get("/history/pending")
 async def get_pending_approvals():
     """Get only pending audit entries - FOR ADMIN DASHBOARD"""
@@ -145,6 +135,177 @@ async def get_pending_approvals():
     pending_entries = [entry for entry in trail if entry.get("status") == "pending"]
     
     return {"entries": pending_entries}
+
+
+# EXISTING ENDPOINT: For audit page - full history
+@router.get("/history/approval-log")
+async def get_approval_log():
+    """Get all audit entries (pending, approved, rejected) from the audit trail - FOR AUDIT PAGE"""
+    # First sync any new pending uploads
+    sync_pending_uploads_to_audit_trail()
+    
+    # Return the complete audit trail for the audit page
+    trail = load_audit_trail()
+    return {"entries": trail}
+
+
+@router.post("/history/approve")
+async def approve_upload(request: Request):
+    data = await request.json()
+    hotel_id = data.get("hotel_id")
+    task_id = data.get("task_id")
+    timestamp = data.get("timestamp")
+    performed_by = data.get("performed_by", "admin")
+
+    # Update the individual hotel history file (KEEP EXISTING LOGIC)
+    history = load_compliance_history(hotel_id)
+    entries = history.get(task_id, [])
+    found = False
+
+    for entry in entries:
+        if entry.get("uploaded_at") == timestamp:
+            entry["approved"] = True
+            entry["reviewed_at"] = datetime.now().isoformat()
+            entry["reviewed_by"] = performed_by
+            found = True
+            break
+
+    if not found:
+        raise HTTPException(status_code=404, detail="Entry not found")
+
+    save_compliance_history(hotel_id, history)
+    
+    # NEW: Update the audit trail to maintain permanent record
+    try:
+        updated_entry = update_audit_trail(hotel_id, task_id, timestamp, "approved", performed_by=performed_by)
+    except HTTPException:
+        # If not in audit trail yet, that's ok - the old system will still work
+        updated_entry = None
+    
+    # KEEP EXISTING: Remove from pending approval log
+    try:
+        obj = s3.get_object(Bucket=BUCKET_NAME, Key=APPROVAL_LOG_KEY)
+        approval_log = json.loads(obj["Body"].read().decode("utf-8"))
+        
+        approval_log = [e for e in approval_log if not (
+            e.get("hotel_id") == hotel_id and
+            e.get("task_id") == task_id and
+            e.get("uploaded_at") == timestamp
+        )]
+        
+        s3.put_object(
+            Bucket=BUCKET_NAME,
+            Key=APPROVAL_LOG_KEY,
+            Body=json.dumps(approval_log, indent=2),
+            ContentType="application/json"
+        )
+    except s3.exceptions.NoSuchKey:
+        pass
+
+    return {"success": True, "message": "Approved"}
+
+
+@router.post("/history/reject")
+async def reject_upload(request: Request):
+    data = await request.json()
+    hotel_id = data.get("hotel_id")
+    task_id = data.get("task_id")
+    timestamp = data.get("timestamp")
+    reason = data.get("reason", "No reason given")
+    performed_by = data.get("performed_by", "admin")
+
+    # KEEP EXISTING LOGIC: Update hotel history
+    history = load_compliance_history(hotel_id)
+    entries = history.get(task_id, [])
+    filtered = [e for e in entries if e.get("uploaded_at") != timestamp]
+
+    if len(filtered) == len(entries):
+        raise HTTPException(status_code=404, detail="Entry not found")
+
+    history[task_id] = filtered
+    save_compliance_history(hotel_id, history)
+    
+    # NEW: Update audit trail to maintain permanent record
+    try:
+        update_audit_trail(hotel_id, task_id, timestamp, "rejected", reason=reason, performed_by=performed_by)
+    except HTTPException:
+        # If not in audit trail yet, that's ok - the old system will still work
+        pass
+    
+    # KEEP EXISTING: Remove from pending approval log
+    try:
+        obj = s3.get_object(Bucket=BUCKET_NAME, Key=APPROVAL_LOG_KEY)
+        approval_log = json.loads(obj["Body"].read().decode("utf-8"))
+        
+        approval_log = [e for e in approval_log if not (
+            e.get("hotel_id") == hotel_id and
+            e.get("task_id") == task_id and
+            e.get("uploaded_at") == timestamp
+        )]
+        
+        s3.put_object(
+            Bucket=BUCKET_NAME,
+            Key=APPROVAL_LOG_KEY,
+            Body=json.dumps(approval_log, indent=2),
+            ContentType="application/json"
+        )
+    except s3.exceptions.NoSuchKey:
+        pass
+
+    return {"success": True, "message": f"Rejected: {reason}"}
+
+
+@router.delete("/history/delete")
+async def delete_upload(request: Request):
+    data = await request.json()
+    hotel_id = data.get("hotel_id")
+    task_id = data.get("task_id")
+    timestamp = data.get("timestamp")
+
+    # KEEP EXISTING LOGIC
+    history = load_compliance_history(hotel_id)
+    entries = history.get(task_id, [])
+    filtered = [e for e in entries if e.get("uploaded_at") != timestamp]
+
+    if len(filtered) == len(entries):
+        raise HTTPException(status_code=404, detail="Entry not found")
+
+    history[task_id] = filtered
+    save_compliance_history(hotel_id, history)
+    
+    # NEW: Remove from audit trail too
+    try:
+        trail = load_audit_trail()
+        trail = [e for e in trail if not (
+            e.get("hotel_id") == hotel_id and
+            e.get("task_id") == task_id and
+            e.get("uploaded_at") == timestamp
+        )]
+        save_audit_trail(trail)
+    except Exception:
+        pass  # If audit trail doesn't exist yet, that's ok
+    
+    # KEEP EXISTING: Remove from pending approval log
+    try:
+        obj = s3.get_object(Bucket=BUCKET_NAME, Key=APPROVAL_LOG_KEY)
+        approval_log = json.loads(obj["Body"].read().decode("utf-8"))
+        
+        approval_log = [e for e in approval_log if not (
+            e.get("hotel_id") == hotel_id and
+            e.get("task_id") == task_id and
+            e.get("uploaded_at") == timestamp
+        )]
+        
+        s3.put_object(
+            Bucket=BUCKET_NAME,
+            Key=APPROVAL_LOG_KEY,
+            Body=json.dumps(approval_log, indent=2),
+            ContentType="application/json"
+        )
+    except s3.exceptions.NoSuchKey:
+        pass
+
+    return {"success": True, "message": "Deleted"}
 
 
 @router.post("/history/approve")
