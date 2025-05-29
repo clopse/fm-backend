@@ -3,7 +3,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import os
-
 load_dotenv()
 
 # Routers
@@ -85,7 +84,7 @@ app.include_router(due_tasks.router, prefix="/api/compliance", tags=["due-tasks"
 app.include_router(compliance_score.router, prefix="/api/compliance", tags=["compliance-score"])
 app.include_router(compliance_leaderboard.router, prefix="/api/compliance", tags=["leaderboard"])
 app.include_router(confirmations.router, prefix="/api/compliance", tags=["confirmations"])
-app.include_router(compliance_history.router, prefix="/api/compliance", tags=["compliance-history"])
+# app.include_router(compliance_history.router, prefix="/api/compliance", tags=["compliance-history"])  # DISABLED - replaced by audit.py
 app.include_router(compliance_tasks.router, prefix="/api/compliance", tags=["compliance-tasks"])
 app.include_router(audit.router, prefix="/api/compliance", tags=["audit"])
 
