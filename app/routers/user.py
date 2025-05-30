@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Request, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, validator
 from typing import Optional, List
 import json
 import boto3
@@ -33,6 +33,10 @@ class UserCreate(BaseModel):
     role: str
     hotel: str
     password: str
+    
+    @validator('email')
+    def normalize_email(cls, v):
+        return v.lower().strip()
 
 class UserUpdate(BaseModel):
     name: Optional[str] = None
@@ -40,15 +44,29 @@ class UserUpdate(BaseModel):
     role: Optional[str] = None
     hotel: Optional[str] = None
     status: Optional[str] = None
+    
+    @validator('email')
+    def normalize_email(cls, v):
+        if v is not None:
+            return v.lower().strip()
+        return v
 
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
+    
+    @validator('email')
+    def normalize_email(cls, v):
+        return v.lower().strip()
 
 class PasswordReset(BaseModel):
     email: EmailStr
     new_password: str
     reset_token: Optional[str] = None
+    
+    @validator('email')
+    def normalize_email(cls, v):
+        return v.lower().strip()
 
 class User(BaseModel):
     id: str
@@ -98,6 +116,14 @@ def save_users(users: dict):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save users: {str(e)}")
 
+def find_user_by_email(users: dict, email: str) -> tuple:
+    """Find user by email (case-insensitive)"""
+    normalized_email = email.lower().strip()
+    for user_id, user_data in users.items():
+        if user_data["email"].lower().strip() == normalized_email:
+            return user_id, user_data
+    return None, None
+
 def hash_password(password: str) -> str:
     """Hash password using bcrypt"""
     return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
@@ -139,9 +165,9 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
 def get_current_user(email: str = Depends(verify_token)):
     """Get current user from token"""
     users = load_users()
-    for user_id, user_data in users.items():
-        if user_data["email"] == email:
-            return User(**user_data, id=user_id)
+    user_id, user_data = find_user_by_email(users, email)
+    if user_data:
+        return User(**user_data, id=user_id)
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="User not found"
@@ -153,14 +179,8 @@ async def login(user_login: UserLogin):
     """User login"""
     users = load_users()
     
-    # Find user by email
-    user_data = None
-    user_id = None
-    for uid, data in users.items():
-        if data["email"] == user_login.email:
-            user_data = data
-            user_id = uid
-            break
+    # Find user by email (case-insensitive)
+    user_id, user_data = find_user_by_email(users, user_login.email)
     
     if not user_data or not verify_password(user_login.password, user_data["password"]):
         raise HTTPException(
@@ -243,10 +263,10 @@ async def create_user(user_create: UserCreate, current_user: User = Depends(get_
     """Create a new user"""
     users = load_users()
     
-    # Check if email already exists
-    for user_data in users.values():
-        if user_data["email"] == user_create.email:
-            raise HTTPException(status_code=400, detail="Email already registered")
+    # Check if email already exists (case-insensitive)
+    existing_user_id, existing_user_data = find_user_by_email(users, user_create.email)
+    if existing_user_data:
+        raise HTTPException(status_code=400, detail="Email already registered")
     
     # Create new user
     user_id = str(uuid.uuid4())
@@ -254,7 +274,7 @@ async def create_user(user_create: UserCreate, current_user: User = Depends(get_
     
     new_user = {
         "name": user_create.name,
-        "email": user_create.email,
+        "email": user_create.email,  # Already normalized by validator
         "role": user_create.role,
         "hotel": user_create.hotel,
         "password": hashed_password,
@@ -286,11 +306,11 @@ async def update_user(
     if user_update.name is not None:
         user_data["name"] = user_update.name
     if user_update.email is not None:
-        # Check if new email already exists
-        for uid, data in users.items():
-            if uid != user_id and data["email"] == user_update.email:
-                raise HTTPException(status_code=400, detail="Email already exists")
-        user_data["email"] = user_update.email
+        # Check if new email already exists (case-insensitive)
+        existing_user_id, existing_user_data = find_user_by_email(users, user_update.email)
+        if existing_user_data and existing_user_id != user_id:
+            raise HTTPException(status_code=400, detail="Email already exists")
+        user_data["email"] = user_update.email  # Already normalized by validator
     if user_update.role is not None:
         user_data["role"] = user_update.role
     if user_update.hotel is not None:
