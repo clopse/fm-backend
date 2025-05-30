@@ -165,9 +165,16 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
 def get_current_user(email: str = Depends(verify_token)):
     """Get current user from token"""
     users = load_users()
+    # First try exact match (for backward compatibility)
+    for user_id, user_data in users.items():
+        if user_data["email"] == email:
+            return User(**user_data, id=user_id)
+    
+    # If exact match fails, try case-insensitive match
     user_id, user_data = find_user_by_email(users, email)
     if user_data:
         return User(**user_data, id=user_id)
+    
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="User not found"
