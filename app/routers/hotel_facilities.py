@@ -244,7 +244,7 @@ async def save_hotel_compliance(hotel_id: str, request: Request):
 
 # NEW ENDPOINT FOR COMPLIANCE TASKS IN FACILITIES FOLDER - FIXED VERSION
 @router.post("/facilities/{hotel_id}tasks")
-async def save_compliance_tasks(hotel_id: str, task_list: dict):
+async def save_compliance_tasks(hotel_id: str, task_list: list):
     """
     Save compliance tasks for a specific hotel to S3
     File will be saved as: hotels/facilities/{hotel_id}tasks.json
