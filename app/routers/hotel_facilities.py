@@ -244,15 +244,19 @@ async def save_hotel_compliance(hotel_id: str, request: Request):
 
 # NEW ENDPOINT FOR COMPLIANCE TASKS IN FACILITIES FOLDER - FIXED VERSION
 @router.post("/facilities/{hotel_id}tasks")
-async def save_compliance_tasks(hotel_id: str, task_list: list):
+async def save_compliance_tasks(hotel_id: str, request: Request):
     """
     Save compliance tasks for a specific hotel to S3
     File will be saved as: hotels/facilities/{hotel_id}tasks.json
     """
     try:
+        # Get the JSON body
+        body = await request.json()
+        task_list = body  # This should be the array from frontend
+        
         print(f"Saving compliance tasks for hotel: {hotel_id}")
         print(f"Received task list type: {type(task_list)}")
-        print(f"Number of tasks received: {len(task_list) if task_list else 0}")
+        print(f"Task list: {task_list}")
         
         # Create the S3 key for compliance tasks
         s3_key = get_compliance_tasks_key(hotel_id)
