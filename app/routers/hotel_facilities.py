@@ -242,17 +242,17 @@ async def save_hotel_compliance(hotel_id: str, request: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save compliance tasks: {e}")
 
-# NEW ENDPOINT FOR COMPLIANCE TASKS IN FACILITIES FOLDER
+# NEW ENDPOINT FOR COMPLIANCE TASKS IN FACILITIES FOLDER - FIXED VERSION
 @router.post("/facilities/{hotel_id}tasks")
-async def save_compliance_tasks(hotel_id: str, request: Request):
+async def save_compliance_tasks(hotel_id: str, task_list: list):
     """
     Save compliance tasks for a specific hotel to S3
     File will be saved as: hotels/facilities/{hotel_id}tasks.json
     """
     try:
-        task_list = await request.json()
         print(f"Saving compliance tasks for hotel: {hotel_id}")
-        print(f"Received task list: {task_list}")
+        print(f"Received task list type: {type(task_list)}")
+        print(f"Number of tasks received: {len(task_list) if task_list else 0}")
         
         # Create the S3 key for compliance tasks
         s3_key = get_compliance_tasks_key(hotel_id)
@@ -282,11 +282,14 @@ async def save_compliance_tasks(hotel_id: str, request: Request):
         return {
             "success": True,
             "message": "Compliance tasks saved successfully",
-            "s3_key": s3_key
+            "s3_key": s3_key,
+            "tasksCount": len(task_list) if task_list else 0
         }
         
     except Exception as e:
         print(f"Error saving compliance tasks: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to save compliance tasks: {str(e)}")
 
 @router.get("/facilities/{hotel_id}tasks")
