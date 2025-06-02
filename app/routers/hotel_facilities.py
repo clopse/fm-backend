@@ -23,12 +23,12 @@ def get_facilities_key(hotel_id: str) -> str:
     return f"hotels/facilities/{hotel_id}.json"
 
 def get_details_key(hotel_id: str) -> str:
-    """Generate S3 key for hotel details data"""
-    return f"hotels/{hotel_id}/details.json"
+    """Generate S3 key for hotel details data - now stored in compliance folder"""
+    return f"{hotel_id}/compliance/details.json"
 
 def get_compliance_key(hotel_id: str) -> str:
     """Generate S3 key for hotel compliance tasks"""
-    return f"hotels/{hotel_id}/compliance/tasks.json"
+    return f"{hotel_id}/compliance/tasks.json"
 
 @router.get("/facilities/{hotel_id}")
 async def get_hotel_facilities(hotel_id: str):
@@ -89,20 +89,30 @@ async def save_hotel_facilities(hotel_id: str, request: Request):
 
 @router.get("/details/{hotel_id}")
 async def get_hotel_details(hotel_id: str):
-    """Get hotel details data (equipment, structure, etc.)"""
+    """Get hotel details data (equipment, structure, etc.) from compliance folder"""
     key = get_details_key(hotel_id)
     try:
         obj = s3.get_object(Bucket=BUCKET_NAME, Key=key)
         data = json.loads(obj["Body"].read().decode("utf-8"))
         return {"hotel_id": hotel_id, "details": data}
     except s3.exceptions.NoSuchKey:
-        return {"hotel_id": hotel_id, "details": {}}
+        # Return default structure if file doesn't exist
+        return {
+            "hotel_id": hotel_id, 
+            "details": {
+                "hotelId": hotel_id,
+                "equipment": {},
+                "structure": {},
+                "lastUpdated": "",
+                "updatedBy": ""
+            }
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load hotel details: {e}")
 
 @router.post("/details/{hotel_id}")
 async def save_hotel_details(hotel_id: str, request: Request):
-    """Save hotel details data (equipment, structure, etc.)"""
+    """Save hotel details data (equipment, structure, etc.) to compliance folder"""
     try:
         data = await request.json()
         
@@ -111,7 +121,7 @@ async def save_hotel_details(hotel_id: str, request: Request):
         data["lastUpdated"] = datetime.utcnow().isoformat()
         data["updatedBy"] = "Admin User"  # In real app, get from auth
         
-        # Save to S3
+        # Save to S3 in the compliance folder
         key = get_details_key(hotel_id)
         s3.put_object(
             Bucket=BUCKET_NAME,
