@@ -243,7 +243,7 @@ async def save_hotel_compliance(hotel_id: str, request: Request):
         raise HTTPException(status_code=500, detail=f"Failed to save compliance tasks: {e}")
 
 # NEW ENDPOINT FOR COMPLIANCE TASKS IN FACILITIES FOLDER - FIXED VERSION
-@router.post("/facilities/{hotel_id}tasks")
+@router.post("/facilities/{hotel_id}/tasks")
 async def save_compliance_tasks(hotel_id: str, request: Request):
     """
     Save compliance tasks for a specific hotel to S3
