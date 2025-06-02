@@ -1,194 +1,106 @@
-# FILE: backend/app/routers/hotel_facilities.py
-from fastapi import APIRouter, HTTPException, Request
-import json
-import boto3
-from datetime import datetime
-import os
+# FILE: main.py
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+import os
 
 load_dotenv()
-router = APIRouter()
 
-s3 = boto3.client(
-    's3',
-    aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
-    aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
-    region_name=os.getenv('AWS_REGION')
+# Routers
+from app.routers import (
+    uploads,
+    utilities,
+    drawings,
+    tenders,
+    compliance,
+    files,
+    monthly_checklist,
+    due_tasks,
+    compliance_score,
+    compliance_leaderboard,
+    confirmations,
+    compliance_history,
+    compliance_tasks,
+    audit,
+    user,  # Add the user router
+    hotel_facilities  # Add the hotel facilities router
 )
 
-BUCKET_NAME = os.getenv("AWS_BUCKET_NAME")
+app = FastAPI(title="JMK Project API", version="1.0.0")
 
-def get_facilities_key(hotel_id: str) -> str:
-    """Generate S3 key for hotel facilities data"""
-    return f"hotels/facilities/{hotel_id}.json"
+# CORS configuration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://jmkfacilities.ie",
+        "https://www.jmkfacilities.ie",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-def get_details_key(hotel_id: str) -> str:
-    """Generate S3 key for hotel details data"""
-    return f"hotels/{hotel_id}/details.json"
-
-def get_compliance_key(hotel_id: str) -> str:
-    """Generate S3 key for hotel compliance tasks"""
-    return f"hotels/{hotel_id}/compliance/tasks.json"
-
-@router.get("/facilities/{hotel_id}")
-async def get_hotel_facilities(hotel_id: str):
-    """Get hotel facilities data"""
-    key = get_facilities_key(hotel_id)
+# Auto-create admin user on startup
+@app.on_event("startup")
+async def create_admin_user():
+    """Create default admin user if no users exist"""
     try:
-        obj = s3.get_object(Bucket=BUCKET_NAME, Key=key)
-        data = json.loads(obj["Body"].read().decode("utf-8"))
-        return {"hotel_id": hotel_id, "facilities": data}
-    except s3.exceptions.NoSuchKey:
-        # Return minimal default structure - frontend will handle the rest
-        return {
-            "hotel_id": hotel_id,
-            "facilities": {
-                "hotelId": hotel_id,
-                "hotelName": "",
-                "address": "",
-                "city": "",
-                "county": "",
-                "postCode": "",
-                "phone": "",
-                "managerName": "",
-                "managerPhone": "",
-                "managerEmail": "",
-                "setupComplete": False,
-                "lastUpdated": "",
-                "updatedBy": ""
+        from app.routers.user import load_users, save_users, hash_password
+        import uuid
+        from datetime import datetime
+        
+        users = load_users()
+        if not users:  # Only create if no users exist
+            admin_id = str(uuid.uuid4())
+            admin_user = {
+                "name": "System Admin",
+                "email": "admin@jmkhotels.ie",
+                "role": "System Admin",
+                "hotel": "All Hotels",
+                "password": hash_password("admin123"),
+                "status": "Active",
+                "created_at": datetime.now().isoformat(),
+                "last_login": None
             }
-        }
+            users[admin_id] = admin_user
+            save_users(users)
+            print("✅ Admin user created successfully!")
+            print("📧 Email: admin@jmkhotels.ie")
+            print("🔑 Password: admin123")
+            print("⚠️  Please change the password after first login!")
+        else:
+            print(f"ℹ️  Found {len(users)} existing users - skipping admin creation")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to load facilities data: {e}")
+        print(f"❌ Error creating admin user: {e}")
 
-@router.post("/facilities/{hotel_id}")
-async def save_hotel_facilities(hotel_id: str, request: Request):
-    """Save hotel facilities data"""
-    try:
-        data = await request.json()
-        
-        # Add metadata
-        data["hotelId"] = hotel_id
-        data["lastUpdated"] = datetime.utcnow().isoformat()
-        data["updatedBy"] = "Admin User"  # In real app, get from auth
-        data["setupComplete"] = True
-        
-        # Save to S3
-        key = get_facilities_key(hotel_id)
-        s3.put_object(
-            Bucket=BUCKET_NAME,
-            Key=key,
-            Body=json.dumps(data, indent=2),
-            ContentType="application/json"
-        )
-        
-        return {"success": True, "message": "Facilities data saved successfully"}
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save facilities data: {e}")
+# Include routers
+app.include_router(utilities.router)  # This gives you /utilities/... endpoints
+app.include_router(tenders.router)
+app.include_router(drawings.router)
+app.include_router(compliance.router, prefix="/compliance", tags=["compliance"])
+app.include_router(files.router)
+app.include_router(monthly_checklist.router, prefix="/api/compliance", tags=["monthly-checklist"])
+app.include_router(due_tasks.router, prefix="/api/compliance", tags=["due-tasks"])
+app.include_router(compliance_score.router, prefix="/api/compliance", tags=["compliance-score"])
+app.include_router(compliance_leaderboard.router, prefix="/api/compliance", tags=["leaderboard"])
+app.include_router(confirmations.router, prefix="/api/compliance", tags=["confirmations"])
+# app.include_router(compliance_history.router, prefix="/api/compliance", tags=["compliance-history"])  # DISABLED - replaced by audit.py
+app.include_router(compliance_tasks.router, prefix="/api/compliance", tags=["compliance-tasks"])
+app.include_router(audit.router, prefix="/api/compliance", tags=["audit"])
 
-@router.get("/details/{hotel_id}")
-async def get_hotel_details(hotel_id: str):
-    """Get hotel details data (equipment, structure, etc.)"""
-    key = get_details_key(hotel_id)
-    try:
-        obj = s3.get_object(Bucket=BUCKET_NAME, Key=key)
-        data = json.loads(obj["Body"].read().decode("utf-8"))
-        return {"hotel_id": hotel_id, "details": data}
-    except s3.exceptions.NoSuchKey:
-        return {"hotel_id": hotel_id, "details": {}}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to load hotel details: {e}")
+# User management router
+app.include_router(user.router, prefix="/api/users", tags=["users"])
 
-@router.post("/details/{hotel_id}")
-async def save_hotel_details(hotel_id: str, request: Request):
-    """Save hotel details data (equipment, structure, etc.)"""
-    try:
-        data = await request.json()
-        
-        # Add metadata
-        data["hotelId"] = hotel_id
-        data["lastUpdated"] = datetime.utcnow().isoformat()
-        data["updatedBy"] = "Admin User"  # In real app, get from auth
-        
-        # Save to S3
-        key = get_details_key(hotel_id)
-        s3.put_object(
-            Bucket=BUCKET_NAME,
-            Key=key,
-            Body=json.dumps(data, indent=2),
-            ContentType="application/json"
-        )
-        
-        return {"success": True, "message": "Hotel details saved successfully"}
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save hotel details: {e}")
+# Hotel facilities router
+app.include_router(hotel_facilities.router, prefix="/api/hotels", tags=["hotels"])
 
-@router.get("/compliance/{hotel_id}")
-async def get_hotel_compliance(hotel_id: str):
-    """Get hotel compliance tasks"""
-    key = get_compliance_key(hotel_id)
-    try:
-        obj = s3.get_object(Bucket=BUCKET_NAME, Key=key)
-        data = json.loads(obj["Body"].read().decode("utf-8"))
-        return {"hotel_id": hotel_id, "tasks": data}
-    except s3.exceptions.NoSuchKey:
-        return {"hotel_id": hotel_id, "tasks": []}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to load compliance tasks: {e}")
+# Base routes
+@app.get("/")
+def read_root():
+    return {"message": "JMK Project API is running 🚀"}
 
-@router.post("/compliance/{hotel_id}")
-async def save_hotel_compliance(hotel_id: str, request: Request):
-    """Save hotel compliance tasks"""
-    try:
-        task_list = await request.json()
-        
-        # Add metadata
-        compliance_data = {
-            "hotelId": hotel_id,
-            "lastUpdated": datetime.utcnow().isoformat(),
-            "updatedBy": "Admin User",
-            "tasks": task_list
-        }
-        
-        # Save to S3 in the compliance folder
-        key = get_compliance_key(hotel_id)
-        s3.put_object(
-            Bucket=BUCKET_NAME,
-            Key=key,
-            Body=json.dumps(compliance_data, indent=2),
-            ContentType="application/json"
-        )
-        
-        return {"success": True, "message": "Compliance tasks saved successfully"}
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save compliance tasks: {e}")
-
-@router.get("/facilities/all/summary")
-async def get_all_facilities_summary():
-    """Get summary of all hotel facilities"""
-    hotels = ["hiex", "hida", "hbhdcc", "hbhe", "sera", "moxy"]
-    
-    summary = []
-    for hotel_id in hotels:
-        try:
-            facilities_response = await get_hotel_facilities(hotel_id)
-            facility_data = facilities_response.get("facilities", {})
-            
-            summary.append({
-                "hotel_id": hotel_id,
-                "hotel_name": facility_data.get("hotelName", hotel_id),
-                "setup_complete": facility_data.get("setupComplete", False),
-                "last_updated": facility_data.get("lastUpdated")
-            })
-        except Exception:
-            summary.append({
-                "hotel_id": hotel_id,
-                "hotel_name": hotel_id,
-                "setup_complete": False,
-                "last_updated": None
-            })
-    
-    return {"hotels": summary}
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
