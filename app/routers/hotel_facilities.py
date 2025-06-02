@@ -264,3 +264,83 @@ async def get_all_facilities_summary():
             })
     
     return {"hotels": summary}
+
+@app.post("/api/hotels/facilities/{hotel_id}tasks")
+async def save_compliance_tasks(hotel_id: str, task_list: List[dict]):
+    """
+    Save compliance tasks for a specific hotel to S3
+    File will be saved as: hotels/facilities/{hotel_id}tasks.json
+    """
+    try:
+        print(f"Saving compliance tasks for hotel: {hotel_id}")
+        print(f"Received task list: {task_list}")
+        
+        # Create the S3 key for compliance tasks
+        s3_key = f"hotels/facilities/{hotel_id}tasks.json"
+        
+        # Prepare the data to save
+        tasks_data = {
+            "hotelId": hotel_id,
+            "lastUpdated": datetime.now().isoformat(),
+            "taskList": task_list
+        }
+        
+        # Convert to JSON string
+        json_data = json.dumps(tasks_data, indent=2)
+        
+        # Save to S3
+        print(f"Saving compliance tasks to S3 key: {s3_key}")
+        s3_client.put_object(
+            Bucket=S3_BUCKET,
+            Key=s3_key,
+            Body=json_data,
+            ContentType='application/json'
+        )
+        
+        print("Successfully saved compliance tasks to S3")
+        
+        return {
+            "success": True,
+            "message": "Compliance tasks saved successfully",
+            "s3_key": s3_key
+        }
+        
+    except Exception as e:
+        print(f"Error saving compliance tasks: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to save compliance tasks: {str(e)}")
+
+
+@app.get("/api/hotels/facilities/{hotel_id}tasks")
+async def get_compliance_tasks(hotel_id: str):
+    """
+    Retrieve compliance tasks for a specific hotel from S3
+    """
+    try:
+        s3_key = f"hotels/facilities/{hotel_id}tasks.json"
+        print(f"Loading compliance tasks from S3 key: {s3_key}")
+        
+        # Try to get the file from S3
+        try:
+            response = s3_client.get_object(Bucket=S3_BUCKET, Key=s3_key)
+            data = json.loads(response['Body'].read().decode('utf-8'))
+            
+            return {
+                "success": True,
+                "tasks": data
+            }
+            
+        except s3_client.exceptions.NoSuchKey:
+            # File doesn't exist yet
+            print(f"No compliance tasks file found for hotel {hotel_id}")
+            return {
+                "success": True,
+                "tasks": {
+                    "hotelId": hotel_id,
+                    "lastUpdated": None,
+                    "taskList": []
+                }
+            }
+            
+    except Exception as e:
+        print(f"Error loading compliance tasks: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to load compliance tasks: {str(e)}")
