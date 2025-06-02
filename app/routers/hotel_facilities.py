@@ -18,6 +18,12 @@ s3 = boto3.client(
 
 BUCKET_NAME = os.getenv("AWS_BUCKET_NAME")
 
+# Debug: Print environment variables (remove in production)
+print(f"AWS_BUCKET_NAME: {BUCKET_NAME}")
+print(f"AWS_REGION: {os.getenv('AWS_REGION')}")
+print(f"AWS_ACCESS_KEY_ID: {'SET' if os.getenv('AWS_ACCESS_KEY_ID') else 'NOT SET'}")
+print(f"AWS_SECRET_ACCESS_KEY: {'SET' if os.getenv('AWS_SECRET_ACCESS_KEY') else 'NOT SET'}")
+
 def get_facilities_key(hotel_id: str) -> str:
     """Generate S3 key for hotel facilities data"""
     return f"hotels/facilities/{hotel_id}.json"
@@ -65,7 +71,9 @@ async def get_hotel_facilities(hotel_id: str):
 async def save_hotel_facilities(hotel_id: str, request: Request):
     """Save hotel facilities data"""
     try:
+        print(f"Saving facilities for hotel: {hotel_id}")
         data = await request.json()
+        print(f"Received facilities data: {data}")
         
         # Add metadata
         data["hotelId"] = hotel_id
@@ -75,6 +83,8 @@ async def save_hotel_facilities(hotel_id: str, request: Request):
         
         # Save to S3
         key = get_facilities_key(hotel_id)
+        print(f"Saving facilities to S3 key: {key}")
+        
         s3.put_object(
             Bucket=BUCKET_NAME,
             Key=key,
@@ -82,10 +92,14 @@ async def save_hotel_facilities(hotel_id: str, request: Request):
             ContentType="application/json"
         )
         
+        print("Successfully saved facilities to S3")
         return {"success": True, "message": "Facilities data saved successfully"}
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save facilities data: {e}")
+        print(f"Error saving facilities: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to save facilities data: {str(e)}")
 
 @router.get("/details/{hotel_id}")
 async def get_hotel_details(hotel_id: str):
@@ -114,7 +128,12 @@ async def get_hotel_details(hotel_id: str):
 async def save_hotel_details(hotel_id: str, request: Request):
     """Save hotel details data (equipment, structure, etc.) to compliance folder"""
     try:
+        # Debug logging
+        print(f"Saving details for hotel: {hotel_id}")
+        print(f"Content-Type: {request.headers.get('content-type')}")
+        
         data = await request.json()
+        print(f"Received data: {data}")
         
         # Add metadata
         data["hotelId"] = hotel_id
@@ -123,6 +142,9 @@ async def save_hotel_details(hotel_id: str, request: Request):
         
         # Save to S3 in the compliance folder
         key = get_details_key(hotel_id)
+        print(f"Saving to S3 key: {key}")
+        print(f"S3 Bucket: {BUCKET_NAME}")
+        
         s3.put_object(
             Bucket=BUCKET_NAME,
             Key=key,
@@ -130,10 +152,15 @@ async def save_hotel_details(hotel_id: str, request: Request):
             ContentType="application/json"
         )
         
+        print("Successfully saved to S3")
         return {"success": True, "message": "Hotel details saved successfully"}
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save hotel details: {e}")
+        print(f"Error saving hotel details: {str(e)}")
+        print(f"Error type: {type(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to save hotel details: {str(e)}")
 
 @router.get("/compliance/{hotel_id}")
 async def get_hotel_compliance(hotel_id: str):
