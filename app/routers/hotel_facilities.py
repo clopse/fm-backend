@@ -1,5 +1,7 @@
 # FILE: backend/app/routers/hotel_facilities.py
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
+from typing import Dict, Any, Optional
 import json
 import boto3
 from datetime import datetime
@@ -23,6 +25,37 @@ print(f"AWS_BUCKET_NAME: {BUCKET_NAME}")
 print(f"AWS_REGION: {os.getenv('AWS_REGION')}")
 print(f"AWS_ACCESS_KEY_ID: {'SET' if os.getenv('AWS_ACCESS_KEY_ID') else 'NOT SET'}")
 print(f"AWS_SECRET_ACCESS_KEY: {'SET' if os.getenv('AWS_SECRET_ACCESS_KEY') else 'NOT SET'}")
+
+# Pydantic models for request bodies
+class HotelFacilitiesData(BaseModel):
+    hotelId: str
+    hotelName: Optional[str] = ""
+    address: Optional[str] = ""
+    city: Optional[str] = ""
+    county: Optional[str] = ""
+    postCode: Optional[str] = ""
+    phone: Optional[str] = ""
+    managerName: Optional[str] = ""
+    managerPhone: Optional[str] = ""
+    managerEmail: Optional[str] = ""
+    setupComplete: Optional[bool] = False
+    lastUpdated: Optional[str] = ""
+    updatedBy: Optional[str] = ""
+    # Allow additional fields for structural, mechanical, etc.
+    structural: Optional[Dict[str, Any]] = {}
+    fireSafety: Optional[Dict[str, Any]] = {}
+    mechanical: Optional[Dict[str, Any]] = {}
+    utilities: Optional[Dict[str, Any]] = {}
+    compliance: Optional[Dict[str, Any]] = {}
+
+class HotelDetailsData(BaseModel):
+    hotelId: str
+    structural: Optional[Dict[str, Any]] = {}
+    fireSafety: Optional[Dict[str, Any]] = {}
+    mechanical: Optional[Dict[str, Any]] = {}
+    utilities: Optional[Dict[str, Any]] = {}
+    lastUpdated: Optional[str] = ""
+    updatedBy: Optional[str] = ""
 
 def get_facilities_key(hotel_id: str) -> str:
     """Generate S3 key for hotel facilities data"""
@@ -68,12 +101,14 @@ async def get_hotel_facilities(hotel_id: str):
         raise HTTPException(status_code=500, detail=f"Failed to load facilities data: {e}")
 
 @router.post("/facilities/{hotel_id}")
-async def save_hotel_facilities(hotel_id: str, request: Request):
+async def save_hotel_facilities(hotel_id: str, facilities_data: HotelFacilitiesData):
     """Save hotel facilities data"""
     try:
         print(f"Saving facilities for hotel: {hotel_id}")
-        data = await request.json()
-        print(f"Received facilities data: {data}")
+        print(f"Received facilities data: {facilities_data}")
+        
+        # Convert Pydantic model to dict
+        data = facilities_data.dict()
         
         # Add metadata
         data["hotelId"] = hotel_id
@@ -125,15 +160,15 @@ async def get_hotel_details(hotel_id: str):
         raise HTTPException(status_code=500, detail=f"Failed to load hotel details: {e}")
 
 @router.post("/details/{hotel_id}")
-async def save_hotel_details(hotel_id: str, request: Request):
+async def save_hotel_details(hotel_id: str, details_data: HotelDetailsData):
     """Save hotel details data (equipment, structure, etc.) to compliance folder"""
     try:
         # Debug logging
         print(f"Saving details for hotel: {hotel_id}")
-        print(f"Content-Type: {request.headers.get('content-type')}")
+        print(f"Received details data: {details_data}")
         
-        data = await request.json()
-        print(f"Received data: {data}")
+        # Convert Pydantic model to dict
+        data = details_data.dict()
         
         # Add metadata
         data["hotelId"] = hotel_id
