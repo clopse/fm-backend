@@ -242,7 +242,7 @@ async def save_hotel_compliance(hotel_id: str, request: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save compliance tasks: {e}")
 
-# NEW ENDPOINTS FOR COMPLIANCE TASKS IN FACILITIES FOLDER
+# NEW ENDPOINT FOR COMPLIANCE TASKS IN FACILITIES FOLDER
 @router.post("/facilities/{hotel_id}tasks")
 async def save_compliance_tasks(hotel_id: str, request: Request):
     """
@@ -257,12 +257,12 @@ async def save_compliance_tasks(hotel_id: str, request: Request):
         # Create the S3 key for compliance tasks
         s3_key = get_compliance_tasks_key(hotel_id)
         
-        # Prepare the data to save
+        # Prepare the data to save - this should be the filtered compliance.json structure
         tasks_data = {
             "hotelId": hotel_id,
             "lastUpdated": datetime.utcnow().isoformat(),
             "updatedBy": "Admin User",
-            "taskList": task_list
+            "complianceData": task_list  # This is the filtered array from compliance.json
         }
         
         # Convert to JSON string
@@ -305,7 +305,7 @@ async def get_compliance_tasks(hotel_id: str):
             
             return {
                 "success": True,
-                "tasks": data
+                "tasks": data.get("complianceData", [])  # Return just the compliance array
             }
             
         except s3.exceptions.NoSuchKey:
@@ -313,11 +313,7 @@ async def get_compliance_tasks(hotel_id: str):
             print(f"No compliance tasks file found for hotel {hotel_id}")
             return {
                 "success": True,
-                "tasks": {
-                    "hotelId": hotel_id,
-                    "lastUpdated": None,
-                    "taskList": []
-                }
+                "tasks": []  # Return empty array that matches compliance.json structure
             }
             
     except Exception as e:
