@@ -17,9 +17,7 @@ s3 = boto3.client(
 )
 
 BUCKET = os.getenv("AWS_BUCKET_NAME")
-
 router = APIRouter()
-
 
 @router.post("/uploads/compliance")
 async def upload_compliance_doc(
@@ -44,7 +42,6 @@ async def upload_compliance_doc(
     safe_filename = file.filename.replace(" ", "_")
     s3_key = f"{hotel_id}/compliance/{task_id}/{report_tag}_{unique_suffix}_{safe_filename}"
     metadata_key = s3_key + ".json"
-
     file_url = f"https://{BUCKET}.s3.amazonaws.com/{s3_key}"
 
     metadata = {
@@ -74,12 +71,13 @@ async def upload_compliance_doc(
 
     return {"message": "Upload successful", "file": file_url}
 
-
 @router.get("/compliance/task-labels")
 def get_task_labels():
     try:
+        # Keep using master compliance.json for task labels - we want all possible labels
         with open("app/data/compliance.json") as f:
             data = json.load(f)
+        
         label_map = {
             task["task_id"]: task["label"]
             for section in data
