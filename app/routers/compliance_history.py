@@ -155,6 +155,7 @@ async def approve_compliance_entry(request: Request):
 @router.get("/history/matrix")
 def get_compliance_matrix():
     try:
+        # Keep using master compliance.json for matrix - we want to see ALL possible tasks
         with open(RULES_PATH, "r") as f:
             rules = json.load(f)
     except Exception:
