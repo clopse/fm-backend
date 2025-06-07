@@ -121,3 +121,35 @@ async def get_water_latest(hotel_id: str):
         return history[-1] if history else {}
     except Exception as e:
         raise HTTPException(404, f"Could not fetch water summary: {e}")
+
+@router.get("/water/{hotel_id}/monthly")
+async def get_monthly_water(hotel_id: str, rooms: int = 100):
+    """
+    Returns monthly water usage, aggregated from daily SmartFlow S3 history.
+    - Each object: {month, cubic_meters, per_room_m3, days}
+    - Used for the main WaterChart component.
+    """
+    s3_key = f"utilities/{hotel_id}/smartflow_history.json"
+    try:
+        obj = s3_client.get_object(Bucket=S3_BUCKET, Key=s3_key)
+        history = json.loads(obj["Body"].read())
+    except Exception as e:
+        raise HTTPException(404, f"Could not fetch water summary: {e}")
+
+    from collections import defaultdict
+
+    months = defaultdict(lambda: {"cubic_meters": 0, "per_room_m3": 0, "days": 0, "month": ""})
+    for entry in history:
+        month = entry["date"][:7]
+        liters = entry.get("total_usage_liters") or 0
+        months[month]["cubic_meters"] += liters / 1000
+        months[month]["days"] += 1
+        months[month]["month"] = month
+
+    for m in months:
+        months[m]["per_room_m3"] = round(months[m]["cubic_meters"] / rooms, 2)
+        months[m]["cubic_meters"] = round(months[m]["cubic_meters"], 2)
+
+    out = sorted(months.values(), key=lambda x: x["month"])
+    return out
+
