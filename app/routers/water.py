@@ -1,62 +1,57 @@
 # routers/water.py
-
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
+from fastapi import APIRouter, HTTPException, BackgroundTasks
 import os
 import requests
 import boto3
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta
 import json
 
 router = APIRouter()
 S3_BUCKET = os.getenv("S3_BUCKET_NAME", "jmk-project-uploads")
 s3_client = boto3.client('s3')
 
-# Map your hotel_id to Smartflow device IDs here:
+# Device IDs per hotel (expand this as needed)
 WATER_DEVICES = {
     "hiex-dublincc": [222710131040, 222710251186],
-    # Add more hotel_ids and device IDs as needed.
+    # add more hotel_ids and their device_ids here
 }
 
-def get_smartflow_token() -> str:
-    """Authenticate to Smartflow and return bearer token."""
-    SMARTFLOW_USER = os.getenv("SMARTFLOW_USER")
-    SMARTFLOW_PASS = os.getenv("SMARTFLOW_PASS")
-    if not SMARTFLOW_USER or not SMARTFLOW_PASS:
-        raise RuntimeError("SMARTFLOW_USER and SMARTFLOW_PASS env vars required.")
-    resp = requests.post(
-        "https://api.smartflowmonitoring.com/latest/users/login/token/",
-        data={"username": SMARTFLOW_USER, "password": SMARTFLOW_PASS},
-        timeout=15,
-    )
-    if not resp.ok:
-        raise HTTPException(status_code=401, detail="Smartflow login failed.")
-    return resp.json().get("access_token")
+SMARTFLOW_URL = os.getenv("SMARTFLOW_URL", "https://api.smartflowmonitoring.com")
 
-def fetch_smartflow_daily(device_id: int, date_str: str, token: str):
-    """Get daily usage for one device."""
-    url = (
-        f"https://api.smartflowmonitoring.com/latest/device_data/{device_id}"
-        f"?req_date={date_str}&date_type=timezone"
+def get_smartflow_token():
+    """Login to SmartFlow API and return access token."""
+    resp = requests.post(
+        f"{SMARTFLOW_URL}/latest/users/login/token/",
+        data={
+            "username": os.getenv("SMARTFLOW_USER"),
+            "password": os.getenv("SMARTFLOW_PASS")
+        },
+        timeout=15
     )
+    resp.raise_for_status()
+    return resp.json()["access_token"]
+
+def fetch_smartflow_daily(device_id, date_str, token):
+    """Fetch daily water usage for a device."""
+    url = f"{SMARTFLOW_URL}/latest/devices/{device_id}/daily_flow?date={date_str}"
     headers = {"Authorization": f"Bearer {token}"}
     r = requests.get(url, headers=headers, timeout=15)
-    if not r.ok:
-        raise HTTPException(status_code=502, detail=f"Smartflow device error {device_id}: {r.text}")
-    return r.json()
+    r.raise_for_status()
+    data = r.json()
+    # Usually the API returns {'date': ..., 'usage': ...} or similar
+    usage = data.get("usage", 0) or data.get("total_usage_liters", 0) or 0
+    return usage
 
-def s3_water_key(hotel_id: str):
+def s3_water_key(hotel_id):
     return f"utilities/{hotel_id}/smartflow_history.json"
 
-@router.post("/sync/{hotel_id}", tags=["water"])
+@router.post("/water/sync/{hotel_id}")
 async def sync_water_usage(
-    hotel_id: str,
-    backfill_days: int = Query(0, description="Days of history to sync (default today only)"),
+    hotel_id: str, 
+    backfill_days: int = 0, 
     background_tasks: BackgroundTasks = None
 ):
-    """
-    Sync SmartFlow water usage for hotel and store daily data to S3.
-    Call with a POST to update, or set as a daily CRON/background job.
-    """
+    """Sync SmartFlow water usage for hotel, store JSON to S3 (run daily/cron)."""
     if hotel_id not in WATER_DEVICES:
         raise HTTPException(400, f"Unknown hotel_id {hotel_id}")
 
@@ -64,7 +59,7 @@ async def sync_water_usage(
         try:
             token = get_smartflow_token()
         except Exception as e:
-            raise HTTPException(500, f"Smartflow token error: {e}")
+            raise HTTPException(502, f"SmartFlow login failed: {e}")
         today = date.today()
         days = backfill_days or 1
         records = []
@@ -75,11 +70,7 @@ async def sync_water_usage(
             breakdown = {}
             for device_id in WATER_DEVICES[hotel_id]:
                 try:
-                    data = fetch_smartflow_daily(device_id, date_str, token)
-                    usage = (
-                        data.get("usage_data", {}).get("usage", 0)
-                        or data.get("usage", 0)
-                    )
+                    usage = fetch_smartflow_daily(device_id, date_str, token)
                     breakdown[str(device_id)] = usage
                     day_sum += usage
                 except Exception as e:
@@ -87,18 +78,18 @@ async def sync_water_usage(
             records.append({
                 "date": date_str,
                 "total_usage_liters": day_sum,
-                "device_breakdown": breakdown,
+                "device_breakdown": breakdown
             })
-        # Load existing from S3 (avoid duplicates)
+        # Merge with existing S3 data (avoid duplicates)
         s3_key = s3_water_key(hotel_id)
         try:
             obj = s3_client.get_object(Bucket=S3_BUCKET, Key=s3_key)
             history = json.loads(obj["Body"].read())
         except s3_client.exceptions.NoSuchKey:
             history = []
-        except Exception as e:
-            raise HTTPException(500, f"S3 error: {e}")
-        # Merge: overwrite by date
+        except Exception:
+            history = []
+        # merge: keep all unique dates
         all_dates = {r["date"]: r for r in history}
         for r in records:
             all_dates[r["date"]] = r
@@ -117,9 +108,9 @@ async def sync_water_usage(
         sync_job()
         return {"status": "synced"}
 
-@router.get("/{hotel_id}/history", tags=["water"])
+@router.get("/water/{hotel_id}/history")
 async def get_water_history(hotel_id: str):
-    """Return all daily water usage from S3 for this hotel."""
+    """Return all water usage for hotel (from S3)."""
     s3_key = s3_water_key(hotel_id)
     try:
         obj = s3_client.get_object(Bucket=S3_BUCKET, Key=s3_key)
@@ -128,7 +119,7 @@ async def get_water_history(hotel_id: str):
     except Exception as e:
         raise HTTPException(404, f"Could not fetch water summary: {e}")
 
-@router.get("/{hotel_id}/latest", tags=["water"])
+@router.get("/water/{hotel_id}/latest")
 async def get_water_latest(hotel_id: str):
     """Return latest day's usage for hotel."""
     s3_key = s3_water_key(hotel_id)
@@ -139,14 +130,12 @@ async def get_water_latest(hotel_id: str):
     except Exception as e:
         raise HTTPException(404, f"Could not fetch water summary: {e}")
 
-@router.get("/{hotel_id}/monthly", tags=["water"])
-async def get_monthly_water(
-    hotel_id: str,
-    rooms: int = Query(100, description="Number of rooms for per-room stats (default 100)")
-):
+@router.get("/water/{hotel_id}/monthly")
+async def get_monthly_water(hotel_id: str, rooms: int = 100):
     """
-    Return monthly water usage for charting.
-    Each object: {month, cubic_meters, per_room_m3, days}
+    Returns monthly water usage, aggregated from daily SmartFlow S3 history.
+    - Each object: {month, cubic_meters, per_room_m3, days}
+    - Used for the main WaterChart component.
     """
     s3_key = s3_water_key(hotel_id)
     try:
