@@ -1302,3 +1302,6 @@ async def export_utility_data(
                         "summary": bill.get('summary'),
                         "uploaded_at": bill.get('uploaded_at')
                     }
+                    for bill in bills  # Add this line to close the list comprehension
+        ]  # Add this line to close the "bills" key in the dictionary
+    }
