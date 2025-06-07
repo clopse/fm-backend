@@ -850,3 +850,152 @@ async def debug_test_single_bill(hotel_id: str, year: str = "2025"):
         
     except Exception as e:
         return {"error": str(e)}
+# Add this endpoint to your utilities router
+
+@router.get("/utilities/bill-pdf/{bill_id}")
+async def get_bill_pdf(bill_id: str):
+    """Download PDF for a specific bill"""
+    try:
+        # Parse bill_id to extract hotel_id, utility_type, and date
+        parts = bill_id.split("_")
+        if len(parts) < 3:
+            raise HTTPException(status_code=400, detail="Invalid bill ID format")
+        
+        hotel_id = parts[0]
+        utility_type = parts[1]
+        bill_date = "_".join(parts[2:])  # In case date has underscores
+        
+        # Get the specific bill data from S3 JSON to find PDF location
+        year = bill_date[:4] if len(bill_date) >= 4 else str(datetime.now().year)
+        bills = get_utility_data_for_hotel_year(hotel_id, year)
+        
+        # Find the specific bill
+        target_bill = None
+        for bill in bills:
+            if (bill.get("utility_type") == utility_type and 
+                bill.get("summary", {}).get("bill_date", "").startswith(bill_date[:7])):
+                target_bill = bill
+                break
+        
+        if not target_bill:
+            raise HTTPException(status_code=404, detail="Bill not found")
+        
+        # Get the original filename to construct PDF path
+        original_filename = target_bill.get("filename", "")
+        if not original_filename:
+            raise HTTPException(status_code=404, detail="Original filename not found")
+        
+        # Construct PDF S3 key based on your storage pattern
+        # PDFs are stored at: {hotel_id}/electricity/{year}/filename.pdf
+        billing_start = target_bill.get("summary", {}).get("billing_period_start", "")
+        billing_year = billing_start[:4] if billing_start else year
+        
+        # Your PDF storage pattern
+        pdf_key = f"{hotel_id}/{utility_type}/{billing_year}/{original_filename}"
+        
+        print(f"Looking for PDF at S3 key: {pdf_key}")
+        
+        try:
+            # Get PDF from S3
+            pdf_response = s3_client.get_object(
+                Bucket=S3_BUCKET_NAME,
+                Key=pdf_key
+            )
+            
+            pdf_content = pdf_response['Body'].read()
+            
+            # Generate appropriate filename based on bill period
+            summary = target_bill.get("summary", {})
+            supplier = summary.get("supplier", "Unknown").replace(" ", "")
+            
+            start_date = summary.get("billing_period_start")
+            end_date = summary.get("billing_period_end") or summary.get("bill_date")
+            
+            if start_date and end_date:
+                # Format dates for filename (e.g., GAS_Flogas_Dec24-Jan25.pdf)
+                start = datetime.strptime(start_date, '%Y-%m-%d')
+                end = datetime.strptime(end_date, '%Y-%m-%d')
+                
+                start_formatted = start.strftime('%b%y')
+                end_formatted = end.strftime('%b%y')
+                
+                if start_formatted == end_formatted:
+                    filename = f"{utility_type.upper()}_{supplier}_{start_formatted}.pdf"
+                else:
+                    filename = f"{utility_type.upper()}_{supplier}_{start_formatted}-{end_formatted}.pdf"
+            else:
+                # Fallback filename
+                filename = f"{utility_type.upper()}_{supplier}_bill.pdf"
+            
+            # Return PDF with proper headers
+            return Response(
+                content=pdf_content,
+                media_type="application/pdf",
+                headers={
+                    "Content-Disposition": f"attachment; filename={filename}",
+                    "Content-Length": str(len(pdf_content))
+                }
+            )
+            
+        except s3_client.exceptions.NoSuchKey:
+            # Try alternative PDF locations if not found
+            alternative_keys = [
+                f"{hotel_id}/{utility_type}/{year}/{original_filename}",
+                f"pdfs/{hotel_id}/{utility_type}/{year}/{original_filename}",
+                f"bills/{hotel_id}/{utility_type}/{original_filename}",
+                f"{hotel_id}/bills/{utility_type}/{original_filename}"
+            ]
+            
+            for alt_key in alternative_keys:
+                try:
+                    print(f"Trying alternative PDF location: {alt_key}")
+                    pdf_response = s3_client.get_object(
+                        Bucket=S3_BUCKET_NAME,
+                        Key=alt_key
+                    )
+                    
+                    pdf_content = pdf_response['Body'].read()
+                    
+                    # Use same filename generation as above
+                    summary = target_bill.get("summary", {})
+                    supplier = summary.get("supplier", "Unknown").replace(" ", "")
+                    start_date = summary.get("billing_period_start")
+                    end_date = summary.get("billing_period_end") or summary.get("bill_date")
+                    
+                    if start_date and end_date:
+                        start = datetime.strptime(start_date, '%Y-%m-%d')
+                        end = datetime.strptime(end_date, '%Y-%m-%d')
+                        start_formatted = start.strftime('%b%y')
+                        end_formatted = end.strftime('%b%y')
+                        
+                        if start_formatted == end_formatted:
+                            filename = f"{utility_type.upper()}_{supplier}_{start_formatted}.pdf"
+                        else:
+                            filename = f"{utility_type.upper()}_{supplier}_{start_formatted}-{end_formatted}.pdf"
+                    else:
+                        filename = f"{utility_type.upper()}_{supplier}_bill.pdf"
+                    
+                    return Response(
+                        content=pdf_content,
+                        media_type="application/pdf",
+                        headers={
+                            "Content-Disposition": f"attachment; filename={filename}",
+                            "Content-Length": str(len(pdf_content))
+                        }
+                    )
+                    
+                except s3_client.exceptions.NoSuchKey:
+                    continue
+            
+            # If no PDF found in any location
+            raise HTTPException(status_code=404, detail=f"PDF file not found for bill {bill_id}")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting bill PDF: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get bill PDF: {str(e)}")
+
+
+# Also add the Response import at the top of your file
+from fastapi.responses import Response
