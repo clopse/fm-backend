@@ -10,15 +10,13 @@ import pdfplumber
 import calendar
 import json
 import boto3
-from io import BytesIO, StringIO
-import csv
-from fastapi.responses import StreamingResponse
+from io import BytesIO
 from app.db.session import get_db, engine
 from app.utils.s3 import save_pdf_to_s3
+from app.s3_config import s3  # Import your S3 client
 
 router = APIRouter()
 
-# Environment variables and configuration
 DOCUPIPE_API_KEY = os.getenv("DOCUPIPE_API_KEY")
 SCHEMA_ELECTRICITY = "3ca991a9"
 SCHEMA_GAS = "33093b4d"
@@ -28,7 +26,6 @@ S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "jmk-project-uploads")
 # Initialize S3 client
 s3_client = boto3.client('s3')
 
-# Database setup
 @router.post("/utilities/create-table-simple")
 async def create_table_simple():
     """Create table with single SQL statement - for Render deployment"""
@@ -42,7 +39,35 @@ async def create_table_simple():
     except Exception as e:
         return {"error": str(e)}
 
-# Bill type detection functions
+@router.post("/utilities/precheck")
+async def precheck_bill_type(file: UploadFile = File(...)):
+    """Quick bill type detection for frontend preview"""
+    try:
+        content = await file.read()
+        
+        with pdfplumber.open(BytesIO(content)) as pdf:
+            pages_text = []
+            for page in pdf.pages:
+                text = page.extract_text()
+                if text:
+                    pages_text.append(text)
+            
+            if not pages_text:
+                return {"bill_type": "unknown", "confidence": "low"}
+            
+            supplier = detect_supplier_from_text(pages_text)
+            bill_type = detect_bill_type(pages_text, supplier)
+            
+            return {
+                "bill_type": bill_type,
+                "supplier": supplier,
+                "confidence": "high" if bill_type != "unknown" else "low"
+            }
+            
+    except Exception as e:
+        print(f"Precheck error: {e}")
+        return {"bill_type": "unknown", "confidence": "low", "error": str(e)}
+
 def detect_supplier_from_text(pages_text):
     full_text = " ".join(pages_text).lower()
     if "flogas" in full_text or "fgnc" in full_text:
@@ -80,10 +105,9 @@ def detect_bill_type(pages_text, supplier):
             print("Supplier-based detection: ELECTRICITY (Arden)")
             return "electricity"
         else:
-            print("Could not determine bill type - defaulting to unknown")
+            print("Could not determine bill type - defaulting to electricity")
             return "unknown"
 
-# Webhook function
 def send_upload_webhook(hotel_id, bill_type, filename, billing_start, s3_path, supplier="Unknown", status="success", error=None):
     if not UPLOAD_WEBHOOK_URL:
         print("No webhook URL set")
@@ -108,278 +132,6 @@ def send_upload_webhook(hotel_id, bill_type, filename, billing_start, s3_path, s
         print(f"Webhook sent: {res.status_code}")
     except Exception as e:
         print(f"Webhook failed: {e}")
-
-# Enhanced S3 functions
-def extract_bill_summary_from_real_data(data: dict, bill_type: str) -> dict:
-    """Extract summary from real parsed bill data structures"""
-    summary = {}
-    
-    try:
-        if bill_type == 'electricity':
-            # Arden Energy electricity bill structure
-            summary.update({
-                'supplier': data.get('supplier', 'Unknown'),
-                'customer_ref': data.get('customerRef', ''),
-                'billing_ref': data.get('billingRef', ''),
-                'account_number': data.get('customerRef', ''),
-                'meter_number': data.get('meterDetails', {}).get('meterNumber', ''),
-                'mprn': data.get('meterDetails', {}).get('mprn', ''),
-                'bill_date': data.get('billingPeriod', {}).get('endDate', ''),
-                'billing_period_start': data.get('billingPeriod', {}).get('startDate', ''),
-                'billing_period_end': data.get('billingPeriod', {}).get('endDate', ''),
-                'total_cost': data.get('totalAmount', {}).get('value', 0),
-                'mic_value': data.get('meterDetails', {}).get('mic', {}).get('value', 0),
-                'max_demand': data.get('meterDetails', {}).get('maxDemand', {}).get('value', 0),
-                'vat_amount': data.get('taxDetails', {}).get('vatAmount', 0),
-                'electricity_tax': data.get('taxDetails', {}).get('electricityTax', {}).get('amount', 0)
-            })
-            
-            # Extract consumption data
-            consumption = data.get('consumption', [])
-            day_kwh = next((c.get('units', {}).get('value', 0) for c in consumption if c.get('type') == 'Day'), 0)
-            night_kwh = next((c.get('units', {}).get('value', 0) for c in consumption if c.get('type') == 'Night'), 0)
-            
-            summary.update({
-                'day_kwh': day_kwh,
-                'night_kwh': night_kwh,
-                'total_kwh': day_kwh + night_kwh
-            })
-            
-        elif bill_type == 'gas':
-            # Flogas gas bill structure
-            summary.update({
-                'supplier': data.get('supplierInfo', {}).get('name', 'Unknown'),
-                'account_number': data.get('accountInfo', {}).get('accountNumber', ''),
-                'gprn': data.get('accountInfo', {}).get('gprn', ''),
-                'meter_number': data.get('accountInfo', {}).get('meterNumber', ''),
-                'bill_date': data.get('billSummary', {}).get('billingPeriodEndDate', ''),
-                'billing_period_start': data.get('billSummary', {}).get('billingPeriodStartDate', ''),
-                'billing_period_end': data.get('billSummary', {}).get('billingPeriodEndDate', ''),
-                'total_cost': data.get('billSummary', {}).get('currentBillAmount', 0),
-                'consumption_kwh': data.get('consumptionDetails', {}).get('consumptionValue', 0),
-                'units_consumed': data.get('meterReadings', {}).get('unitsConsumed', 0),
-                'conversion_factor': data.get('consumptionDetails', {}).get('conversionFactor', 0),
-                'vat_amount': data.get('billSummary', {}).get('totalVatAmount', 0)
-            })
-            
-            # Extract line items for detailed costs
-            line_items = data.get('lineItems', [])
-            carbon_tax = next((item.get('amount', 0) for item in line_items if 'carbon' in item.get('description', '').lower()), 0)
-            standing_charge = next((item.get('amount', 0) for item in line_items if 'standing' in item.get('description', '').lower()), 0)
-            commodity_cost = next((item.get('amount', 0) for item in line_items if 'commodity' in item.get('description', '').lower() or 'tariff' in item.get('description', '').lower()), 0)
-            
-            summary.update({
-                'carbon_tax': carbon_tax,
-                'standing_charge': standing_charge,
-                'commodity_cost': commodity_cost
-            })
-    
-    except Exception as e:
-        print(f"Error extracting summary for {bill_type}: {e}")
-    
-    return summary
-
-def save_parsed_data_to_s3(hotel_id: str, bill_type: str, parsed_data: dict, upload_date: str, filename: str):
-    """Save parsed utility bill data to S3 with proper structure"""
-    try:
-        # Extract bill summary using the real JSON structure
-        summary = extract_bill_summary_from_real_data(parsed_data, bill_type)
-        
-        # Create the complete bill data structure
-        bill_data = {
-            "hotel_id": hotel_id,
-            "utility_type": bill_type,
-            "filename": filename,
-            "uploaded_at": upload_date or datetime.utcnow().isoformat(),
-            "summary": summary,
-            "raw_data": parsed_data
-        }
-        
-        # Determine year for folder structure
-        bill_date = summary.get('bill_date', '')
-        year = bill_date.split('-')[0] if bill_date else datetime.utcnow().strftime('%Y')
-        
-        # Use consistent S3 key pattern
-        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
-        base_filename = filename.replace('.pdf', '').replace('.json', '')
-        s3_key = f"utilities/{hotel_id}/{year}/{bill_type}_{base_filename}_{timestamp}.json"
-        
-        # Save to S3
-        s3_client.put_object(
-            Bucket=S3_BUCKET_NAME,
-            Key=s3_key,
-            Body=json.dumps(bill_data, ensure_ascii=False, indent=2),
-            ContentType='application/json'
-        )
-        
-        print(f"Successfully saved bill to S3: {s3_key}")
-        return s3_key
-        
-    except Exception as e:
-        print(f"Error saving to S3: {e}")
-        raise e
-
-def get_utility_data_for_hotel_year(hotel_id: str, year: str):
-    """Get utility bills data from S3 - with better error handling and multiple location checks"""
-    try:
-        bills = []
-        
-        # Check multiple possible S3 locations where bills might be stored
-        possible_prefixes = [
-            f"utilities/{hotel_id}/{year}/",  # Most likely location
-            f"{hotel_id}/utilities/{year}/",  # Alternative location
-            f"utilities/{hotel_id}/",         # Year-agnostic location
-            f"{hotel_id}/utilities/",         # Year-agnostic alternative
-        ]
-        
-        print(f"Searching for {hotel_id} {year} bills in S3...")
-        
-        for prefix in possible_prefixes:
-            try:
-                print(f"Checking prefix: {prefix}")
-                response = s3_client.list_objects_v2(
-                    Bucket=S3_BUCKET_NAME,
-                    Prefix=prefix
-                )
-                
-                if 'Contents' in response:
-                    print(f"Found {len(response['Contents'])} objects in {prefix}")
-                    
-                    for obj in response['Contents']:
-                        key = obj['Key']
-                        print(f"Processing file: {key}")
-                        
-                        # Skip if not JSON
-                        if not key.endswith('.json'):
-                            continue
-                        
-                        try:
-                            # Get file content
-                            file_response = s3_client.get_object(
-                                Bucket=S3_BUCKET_NAME,
-                                Key=key
-                            )
-                            
-                            bill_data = json.loads(file_response['Body'].read())
-                            
-                            # Check if this bill is for the requested year
-                            bill_date = None
-                            if 'summary' in bill_data:
-                                bill_date = bill_data['summary'].get('bill_date', '')
-                            elif 'billingPeriod' in bill_data.get('raw_data', {}):
-                                bill_date = bill_data['raw_data']['billingPeriod'].get('endDate', '')
-                            elif 'billSummary' in bill_data.get('raw_data', {}):
-                                bill_date = bill_data['raw_data']['billSummary'].get('billingPeriodEndDate', '')
-                            
-                            # Skip if wrong year
-                            if bill_date and not bill_date.startswith(year):
-                                continue
-                            
-                            print(f"Adding bill: {key} for date {bill_date}")
-                            bills.append(bill_data)
-                            
-                        except Exception as e:
-                            print(f"Error processing {key}: {e}")
-                            continue
-                
-            except Exception as e:
-                print(f"Error checking prefix {prefix}: {e}")
-                continue
-        
-        print(f"Total bills found for {hotel_id} {year}: {len(bills)}")
-        return bills
-        
-    except Exception as e:
-        print(f"Error in get_utility_data_for_hotel_year: {e}")
-        return []
-
-def get_utility_summary_for_comparison(hotel_list: list, year: str):
-    """Get utility summary data for multiple hotels for comparison"""
-    try:
-        comparison_data = []
-        
-        for hotel_id in hotel_list:
-            bills = get_utility_data_for_hotel_year(hotel_id, year)
-            
-            hotel_summary = {
-                "hotel_id": hotel_id,
-                "electricity": {"total_kwh": 0, "total_cost": 0, "bills_count": 0},
-                "gas": {"total_kwh": 0, "total_cost": 0, "bills_count": 0},
-                "total_cost": 0
-            }
-            
-            for bill in bills:
-                utility_type = bill.get('utility_type', 'unknown')
-                summary = bill.get('summary', {})
-                
-                if utility_type == 'electricity':
-                    hotel_summary["electricity"]["total_kwh"] += summary.get('total_kwh', 0)
-                    hotel_summary["electricity"]["total_cost"] += summary.get('total_cost', 0)
-                    hotel_summary["electricity"]["bills_count"] += 1
-                elif utility_type == 'gas':
-                    hotel_summary["gas"]["total_kwh"] += summary.get('consumption_kwh', 0)
-                    hotel_summary["gas"]["total_cost"] += summary.get('total_cost', 0)
-                    hotel_summary["gas"]["bills_count"] += 1
-                
-                hotel_summary["total_cost"] += summary.get('total_cost', 0)
-            
-            comparison_data.append(hotel_summary)
-        
-        return comparison_data
-        
-    except Exception as e:
-        print(f"Error in get_utility_summary_for_comparison: {e}")
-        return []
-
-def get_hotel_ids_from_s3():
-    """Get list of hotel IDs by scanning S3 bucket structure"""
-    try:
-        response = s3_client.list_objects_v2(
-            Bucket=S3_BUCKET_NAME,
-            Delimiter='/'
-        )
-        
-        hotel_ids = []
-        if 'CommonPrefixes' in response:
-            for prefix in response['CommonPrefixes']:
-                # Extract hotel ID from prefix (e.g., "hiex/" -> "hiex")
-                hotel_id = prefix['Prefix'].rstrip('/')
-                hotel_ids.append(hotel_id)
-        
-        return hotel_ids
-    except Exception as e:
-        print(f"Error getting hotel IDs from S3: {e}")
-        return []
-
-# API endpoints
-@router.post("/utilities/precheck")
-async def precheck_bill_type(file: UploadFile = File(...)):
-    """Quick bill type detection for frontend preview"""
-    try:
-        content = await file.read()
-        
-        with pdfplumber.open(BytesIO(content)) as pdf:
-            pages_text = []
-            for page in pdf.pages:
-                text = page.extract_text()
-                if text:
-                    pages_text.append(text)
-            
-            if not pages_text:
-                return {"bill_type": "unknown", "confidence": "low"}
-            
-            supplier = detect_supplier_from_text(pages_text)
-            bill_type = detect_bill_type(pages_text, supplier)
-            
-            return {
-                "bill_type": bill_type,
-                "supplier": supplier,
-                "confidence": "high" if bill_type != "unknown" else "low"
-            }
-            
-    except Exception as e:
-        print(f"Precheck error: {e}")
-        return {"bill_type": "unknown", "confidence": "low", "error": str(e)}
 
 @router.post("/utilities/parse-and-save")
 async def parse_and_save(
@@ -669,7 +421,231 @@ def process_and_store_docupipe(db, content, hotel_id, filename, bill_date, bill_
         import traceback
         traceback.print_exc()
 
-# Data retrieval and analysis endpoints
+# ENHANCED S3 FUNCTIONS
+
+def save_parsed_data_to_s3(hotel_id: str, bill_type: str, parsed_data: dict, upload_date: str, filename: str):
+    """Save parsed utility bill data to S3 with proper structure"""
+    try:
+        # Extract bill summary using the real JSON structure
+        summary = extract_bill_summary_from_real_data(parsed_data, bill_type)
+        
+        # Create the complete bill data structure
+        bill_data = {
+            "hotel_id": hotel_id,
+            "utility_type": bill_type,
+            "filename": filename,
+            "uploaded_at": upload_date or datetime.utcnow().isoformat(),
+            "summary": summary,
+            "raw_data": parsed_data
+        }
+        
+        # Determine year for folder structure
+        bill_date = summary.get('bill_date', '')
+        year = bill_date.split('-')[0] if bill_date else datetime.utcnow().strftime('%Y')
+        
+        # Use consistent S3 key pattern
+        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+        base_filename = filename.replace('.pdf', '').replace('.json', '')
+        s3_key = f"utilities/{hotel_id}/{year}/{bill_type}_{base_filename}_{timestamp}.json"
+        
+        # Save to S3
+        s3_client.put_object(
+            Bucket=S3_BUCKET_NAME,
+            Key=s3_key,
+            Body=json.dumps(bill_data, ensure_ascii=False, indent=2),
+            ContentType='application/json'
+        )
+        
+        print(f"Successfully saved bill to S3: {s3_key}")
+        return s3_key
+        
+    except Exception as e:
+        print(f"Error saving to S3: {e}")
+        raise e
+
+def extract_bill_summary_from_real_data(data: dict, bill_type: str) -> dict:
+    """Extract summary from real parsed bill data structures"""
+    summary = {}
+    
+    try:
+        if bill_type == 'electricity':
+            # Arden Energy electricity bill structure
+            summary.update({
+                'supplier': data.get('supplier', 'Unknown'),
+                'customer_ref': data.get('customerRef', ''),
+                'billing_ref': data.get('billingRef', ''),
+                'account_number': data.get('customerRef', ''),
+                'meter_number': data.get('meterDetails', {}).get('meterNumber', ''),
+                'mprn': data.get('meterDetails', {}).get('mprn', ''),
+                'bill_date': data.get('billingPeriod', {}).get('endDate', ''),
+                'billing_period_start': data.get('billingPeriod', {}).get('startDate', ''),
+                'billing_period_end': data.get('billingPeriod', {}).get('endDate', ''),
+                'total_cost': data.get('totalAmount', {}).get('value', 0),
+                'mic_value': data.get('meterDetails', {}).get('mic', {}).get('value', 0),
+                'max_demand': data.get('meterDetails', {}).get('maxDemand', {}).get('value', 0),
+                'vat_amount': data.get('taxDetails', {}).get('vatAmount', 0),
+                'electricity_tax': data.get('taxDetails', {}).get('electricityTax', {}).get('amount', 0)
+            })
+            
+            # Extract consumption data
+            consumption = data.get('consumption', [])
+            day_kwh = next((c.get('units', {}).get('value', 0) for c in consumption if c.get('type') == 'Day'), 0)
+            night_kwh = next((c.get('units', {}).get('value', 0) for c in consumption if c.get('type') == 'Night'), 0)
+            
+            summary.update({
+                'day_kwh': day_kwh,
+                'night_kwh': night_kwh,
+                'total_kwh': day_kwh + night_kwh
+            })
+            
+        elif bill_type == 'gas':
+            # Flogas gas bill structure
+            summary.update({
+                'supplier': data.get('supplierInfo', {}).get('name', 'Unknown'),
+                'account_number': data.get('accountInfo', {}).get('accountNumber', ''),
+                'gprn': data.get('accountInfo', {}).get('gprn', ''),
+                'meter_number': data.get('accountInfo', {}).get('meterNumber', ''),
+                'bill_date': data.get('billSummary', {}).get('billingPeriodEndDate', ''),
+                'billing_period_start': data.get('billSummary', {}).get('billingPeriodStartDate', ''),
+                'billing_period_end': data.get('billSummary', {}).get('billingPeriodEndDate', ''),
+                'total_cost': data.get('billSummary', {}).get('currentBillAmount', 0),
+                'consumption_kwh': data.get('consumptionDetails', {}).get('consumptionValue', 0),
+                'units_consumed': data.get('meterReadings', {}).get('unitsConsumed', 0),
+                'conversion_factor': data.get('consumptionDetails', {}).get('conversionFactor', 0),
+                'vat_amount': data.get('billSummary', {}).get('totalVatAmount', 0)
+            })
+            
+            # Extract line items for detailed costs
+            line_items = data.get('lineItems', [])
+            carbon_tax = next((item.get('amount', 0) for item in line_items if 'carbon' in item.get('description', '').lower()), 0)
+            standing_charge = next((item.get('amount', 0) for item in line_items if 'standing' in item.get('description', '').lower()), 0)
+            commodity_cost = next((item.get('amount', 0) for item in line_items if 'commodity' in item.get('description', '').lower() or 'tariff' in item.get('description', '').lower()), 0)
+            
+            summary.update({
+                'carbon_tax': carbon_tax,
+                'standing_charge': standing_charge,
+                'commodity_cost': commodity_cost
+            })
+    
+    except Exception as e:
+        print(f"Error extracting summary for {bill_type}: {e}")
+    
+    return summary
+
+def get_utility_data_for_hotel_year(hotel_id: str, year: str):
+    """Get utility bills data from S3 - with better error handling and multiple location checks"""
+    try:
+        bills = []
+        
+        # Check multiple possible S3 locations where bills might be stored
+        possible_prefixes = [
+            f"utilities/{hotel_id}/{year}/",  # Most likely location
+            f"{hotel_id}/utilities/{year}/",  # Alternative location
+            f"utilities/{hotel_id}/",         # Year-agnostic location
+            f"{hotel_id}/utilities/",         # Year-agnostic alternative
+        ]
+        
+        print(f"Searching for {hotel_id} {year} bills in S3...")
+        
+        for prefix in possible_prefixes:
+            try:
+                print(f"Checking prefix: {prefix}")
+                response = s3_client.list_objects_v2(
+                    Bucket=S3_BUCKET_NAME,
+                    Prefix=prefix
+                )
+                
+                if 'Contents' in response:
+                    print(f"Found {len(response['Contents'])} objects in {prefix}")
+                    
+                    for obj in response['Contents']:
+                        key = obj['Key']
+                        print(f"Processing file: {key}")
+                        
+                        # Skip if not JSON
+                        if not key.endswith('.json'):
+                            continue
+                        
+                        try:
+                            # Get file content
+                            file_response = s3_client.get_object(
+                                Bucket=S3_BUCKET_NAME,
+                                Key=key
+                            )
+                            
+                            bill_data = json.loads(file_response['Body'].read())
+                            
+                            # Check if this bill is for the requested year
+                            bill_date = None
+                            if 'summary' in bill_data:
+                                bill_date = bill_data['summary'].get('bill_date', '')
+                            elif 'billingPeriod' in bill_data.get('raw_data', {}):
+                                bill_date = bill_data['raw_data']['billingPeriod'].get('endDate', '')
+                            elif 'billSummary' in bill_data.get('raw_data', {}):
+                                bill_date = bill_data['raw_data']['billSummary'].get('billingPeriodEndDate', '')
+                            
+                            # Skip if wrong year
+                            if bill_date and not bill_date.startswith(year):
+                                continue
+                            
+                            print(f"Adding bill: {key} for date {bill_date}")
+                            bills.append(bill_data)
+                            
+                        except Exception as e:
+                            print(f"Error processing {key}: {e}")
+                            continue
+                
+            except Exception as e:
+                print(f"Error checking prefix {prefix}: {e}")
+                continue
+        
+        print(f"Total bills found for {hotel_id} {year}: {len(bills)}")
+        return bills
+        
+    except Exception as e:
+        print(f"Error in get_utility_data_for_hotel_year: {e}")
+        return []
+
+def get_utility_summary_for_comparison(hotel_list: list, year: str):
+    """Get utility summary data for multiple hotels for comparison"""
+    try:
+        comparison_data = []
+        
+        for hotel_id in hotel_list:
+            bills = get_utility_data_for_hotel_year(hotel_id, year)
+            
+            hotel_summary = {
+                "hotel_id": hotel_id,
+                "electricity": {"total_kwh": 0, "total_cost": 0, "bills_count": 0},
+                "gas": {"total_kwh": 0, "total_cost": 0, "bills_count": 0},
+                "total_cost": 0
+            }
+            
+            for bill in bills:
+                utility_type = bill.get('utility_type', 'unknown')
+                summary = bill.get('summary', {})
+                
+                if utility_type == 'electricity':
+                    hotel_summary["electricity"]["total_kwh"] += summary.get('total_kwh', 0)
+                    hotel_summary["electricity"]["total_cost"] += summary.get('total_cost', 0)
+                    hotel_summary["electricity"]["bills_count"] += 1
+                elif utility_type == 'gas':
+                    hotel_summary["gas"]["total_kwh"] += summary.get('consumption_kwh', 0)
+                    hotel_summary["gas"]["total_cost"] += summary.get('total_cost', 0)
+                    hotel_summary["gas"]["bills_count"] += 1
+                
+                hotel_summary["total_cost"] += summary.get('total_cost', 0)
+            
+            comparison_data.append(hotel_summary)
+        
+        return comparison_data
+        
+    except Exception as e:
+        print(f"Error in get_utility_summary_for_comparison: {e}")
+        return []
+
+# API ENDPOINTS
+
 @router.get("/utilities/{hotel_id}/{year}")
 async def get_utilities_data(hotel_id: str, year: int):
     """Get utility bills data from S3 for charts - FIXED VERSION"""
@@ -1002,7 +978,7 @@ async def send_reminder_email(reminder_data: dict):
         # For now, just return success
         print(f"Sending reminder: {hotel_id} - {utility_type} - {month}")
         
-        # Integration point with your email system
+        # You can integrate with your existing email system here
         # email_service.send_reminder_email(hotel_id, utility_type, month)
         
         return {"success": True, "message": "Reminder email sent"}
@@ -1063,6 +1039,26 @@ async def get_all_bills():
         print(f"Error getting all bills: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get all bills: {str(e)}")
 
+def get_hotel_ids_from_s3():
+    """Get list of hotel IDs by scanning S3 bucket structure"""
+    try:
+        response = s3_client.list_objects_v2(
+            Bucket=S3_BUCKET_NAME,
+            Delimiter='/'
+        )
+        
+        hotel_ids = []
+        if 'CommonPrefixes' in response:
+            for prefix in response['CommonPrefixes']:
+                # Extract hotel ID from prefix (e.g., "hiex/" -> "hiex")
+                hotel_id = prefix['Prefix'].rstrip('/')
+                hotel_ids.append(hotel_id)
+        
+        return hotel_ids
+    except Exception as e:
+        print(f"Error getting hotel IDs from S3: {e}")
+        return []
+
 @router.get("/utilities/bill-details/{bill_id}")
 async def get_bill_details(bill_id: str):
     """Get detailed parsed data for a specific bill"""
@@ -1119,6 +1115,8 @@ async def get_utilities_comparison(year: int, hotel_ids: str = "hiex,moxy,hida,h
     except Exception as e:
         print(f"Error fetching comparison data: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch comparison data: {str(e)}")
+
+# ANALYTICS ENDPOINTS
 
 @router.get("/utilities/{hotel_id}/analytics")
 async def get_utility_analytics(
@@ -1231,6 +1229,10 @@ async def export_utility_data(
 ):
     """Export utility data as CSV or JSON"""
     try:
+        from io import StringIO
+        import csv
+        from fastapi.responses import StreamingResponse
+        
         # Get raw bills data
         bills_response = await get_raw_bills_data(hotel_id, year)
         bills = bills_response["bills"]
@@ -1302,6 +1304,268 @@ async def export_utility_data(
                         "summary": bill.get('summary'),
                         "uploaded_at": bill.get('uploaded_at')
                     }
-                    for bill in bills  # Add this line to close the list comprehension
-        ]  # Add this line to close the "bills" key in the dictionary
-    }
+                    for bill in bills
+                ]
+            }
+            
+            filename = f"{hotel_id}_utilities_{year or 'all'}_{utility_type or 'all'}.json"
+            
+            return StreamingResponse(
+                iter([json.dumps(export_data, indent=2, ensure_ascii=False)]),
+                media_type="application/json",
+                headers={"Content-Disposition": f"attachment; filename={filename}"}
+            )
+        
+    except Exception as e:
+        print(f"Error exporting data: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to export data: {str(e)}")
+
+# DEBUG ENDPOINTS
+
+@router.get("/utilities/debug/check-s3/{hotel_id}")
+async def debug_check_s3_structure(hotel_id: str):
+    """Debug endpoint to check S3 structure for a specific hotel"""
+    try:
+        prefixes_to_check = [
+            f"utilities/{hotel_id}/",
+            f"{hotel_id}/utilities/",
+            f"{hotel_id}/",
+            f"parsed_bills/{hotel_id}/",
+        ]
+        
+        results = {
+            "hotel_id": hotel_id,
+            "bucket": S3_BUCKET_NAME,
+            "locations_checked": {},
+            "total_files_found": 0
+        }
+        
+        for prefix in prefixes_to_check:
+            try:
+                response = s3_client.list_objects_v2(
+                    Bucket=S3_BUCKET_NAME,
+                    Prefix=prefix,
+                    MaxKeys=100
+                )
+                
+                files = []
+                if 'Contents' in response:
+                    for obj in response['Contents']:
+                        files.append({
+                            "key": obj['Key'],
+                            "size": obj['Size'],
+                            "last_modified": obj['LastModified'].isoformat(),
+                            "filename": obj['Key'].split('/')[-1]
+                        })
+                
+                results["locations_checked"][prefix] = {
+                    "files_found": len(files),
+                    "files": files[:10]  # Limit to first 10 for readability
+                }
+                results["total_files_found"] += len(files)
+                
+            except Exception as e:
+                results["locations_checked"][prefix] = {
+                    "error": str(e),
+                    "files_found": 0
+                }
+        
+        return results
+        
+    except Exception as e:
+        return {"error": str(e)}
+
+@router.get("/utilities/debug/test-extraction/{hotel_id}")
+async def debug_test_extraction(hotel_id: str, year: str = "2024"):
+    """Debug endpoint to test data extraction for a specific hotel"""
+    try:
+        # Get bills using the updated function
+        bills = get_utility_data_for_hotel_year(hotel_id, year)
+        
+        extraction_results = {
+            "hotel_id": hotel_id,
+            "year": year,
+            "total_bills_found": len(bills),
+            "bills_analysis": []
+        }
+        
+        for i, bill in enumerate(bills):
+            try:
+                analysis = {
+                    "bill_index": i,
+                    "has_summary": "summary" in bill,
+                    "has_raw_data": "raw_data" in bill,
+                    "utility_type": bill.get('utility_type', 'unknown'),
+                    "filename": bill.get('filename', 'unknown'),
+                    "structure_keys": list(bill.keys())
+                }
+                
+                # Try to extract key fields
+                raw_data = bill.get('raw_data', bill)
+                summary = bill.get('summary', {})
+                
+                if bill.get('utility_type') == 'electricity':
+                    consumption = raw_data.get('consumption', [])
+                    analysis["extraction_test"] = {
+                        "day_kwh": next((c.get('units', {}).get('value', 0) for c in consumption if c.get('type') == 'Day'), 0),
+                        "night_kwh": next((c.get('units', {}).get('value', 0) for c in consumption if c.get('type') == 'Night'), 0),
+                        "total_cost": raw_data.get('totalAmount', {}).get('value', 0),
+                        "bill_date": raw_data.get('billingPeriod', {}).get('endDate', '')
+                    }
+                elif bill.get('utility_type') == 'gas':
+                    analysis["extraction_test"] = {
+                        "consumption_kwh": raw_data.get('consumptionDetails', {}).get('consumptionValue', 0),
+                        "total_cost": raw_data.get('billSummary', {}).get('currentBillAmount', 0),
+                        "bill_date": raw_data.get('billSummary', {}).get('billingPeriodEndDate', '')
+                    }
+                
+                extraction_results["bills_analysis"].append(analysis)
+                
+            except Exception as e:
+                extraction_results["bills_analysis"].append({
+                    "bill_index": i,
+                    "error": str(e)
+                })
+        
+        return extraction_results
+        
+    except Exception as e:
+        return {"error": str(e)}
+
+@router.get("/utilities/debug/s3-structure")
+async def debug_s3_structure():
+    """Debug endpoint to see the actual S3 bucket structure"""
+    try:
+        # List all top-level prefixes (hotel IDs)
+        response = s3_client.list_objects_v2(
+            Bucket=S3_BUCKET_NAME,
+            Delimiter='/'
+        )
+        
+        structure = {
+            "bucket_name": S3_BUCKET_NAME,
+            "top_level_prefixes": [],
+            "total_objects": 0
+        }
+        
+        # Get hotel-level folders
+        if 'CommonPrefixes' in response:
+            for prefix in response['CommonPrefixes']:
+                hotel_id = prefix['Prefix'].rstrip('/')
+                structure["top_level_prefixes"].append(hotel_id)
+        
+        # For each hotel, check utilities folder structure
+        for hotel_id in structure["top_level_prefixes"][:5]:  # Limit to first 5 for performance
+            # Check utilities folder
+            utilities_prefix = f"{hotel_id}/utilities/"
+            utilities_response = s3_client.list_objects_v2(
+                Bucket=S3_BUCKET_NAME,
+                Prefix=utilities_prefix,
+                MaxKeys=1000
+            )
+            
+            hotel_structure = {
+                "hotel_id": hotel_id,
+                "utilities_files": [],
+                "utilities_count": 0
+            }
+            
+            if 'Contents' in utilities_response:
+                for obj in utilities_response['Contents']:
+                    key = obj['Key']
+                    size = obj['Size']
+                    last_modified = obj['LastModified'].isoformat()
+                    
+                    hotel_structure["utilities_files"].append({
+                        "key": key,
+                        "size": size,
+                        "last_modified": last_modified,
+                        "filename": key.split('/')[-1]
+                    })
+                    hotel_structure["utilities_count"] += 1
+                    structure["total_objects"] += 1
+            
+            structure[hotel_id] = hotel_structure
+        
+        return structure
+        
+    except Exception as e:
+        return {"error": str(e), "bucket": S3_BUCKET_NAME}
+
+@router.get("/utilities/debug/fix-structure/{hotel_id}")
+async def debug_fix_structure(hotel_id: str):
+    """Suggest fixes for utility data structure issues"""
+    try:
+        # First check what files exist
+        debug_response = await debug_check_s3_structure(hotel_id)
+        
+        suggestions = {
+            "hotel_id": hotel_id,
+            "current_structure": debug_response,
+            "issues_found": [],
+            "suggestions": []
+        }
+        
+        # Check if any utility files found
+        total_files = debug_response.get("total_files_found", 0)
+        
+        if total_files == 0:
+            suggestions["issues_found"].append("No utility files found for this hotel")
+            suggestions["suggestions"].append("Upload bills through the utilities upload interface")
+            suggestions["suggestions"].append("Check if bills were uploaded under a different hotel ID")
+        
+        # Check for correct location
+        preferred_location = f"utilities/{hotel_id}/"
+        locations_checked = debug_response.get("locations_checked", {})
+        
+        if preferred_location not in locations_checked or \
+           locations_checked.get(preferred_location, {}).get("files_found", 0) == 0:
+            suggestions["issues_found"].append(f"No files in preferred location: {preferred_location}")
+            
+            # Find where files actually are
+            for location, data in locations_checked.items():
+                if isinstance(data, dict) and data.get("files_found", 0) > 0:
+                    suggestions["suggestions"].append(f"Files found in: {location} - consider moving to {preferred_location}")
+        
+        return suggestions
+        
+    except Exception as e:
+        return {"error": str(e)}
+
+# HELPER FUNCTIONS FOR DEBUGGING
+
+def categorize_electricity_charge(description: str) -> str:
+    """Categorize electricity charges for analysis"""
+    desc_lower = description.lower()
+    
+    if 'standing' in desc_lower:
+        return 'standing_charges'
+    elif 'day' in desc_lower and 'units' in desc_lower:
+        return 'day_consumption'
+    elif 'night' in desc_lower and 'units' in desc_lower:
+        return 'night_consumption'
+    elif 'mic' in desc_lower or 'capacity' in desc_lower:
+        return 'capacity_charges'
+    elif 'demand' in desc_lower:
+        return 'demand_charges'
+    elif 'pso' in desc_lower:
+        return 'levies'
+    elif 'tax' in desc_lower:
+        return 'taxes'
+    else:
+        return 'other'
+
+def categorize_gas_charge(description: str) -> str:
+    """Categorize gas charges for analysis"""
+    desc_lower = description.lower()
+    
+    if 'commodity' in desc_lower or 'tariff' in desc_lower:
+        return 'commodity'
+    elif 'carbon' in desc_lower:
+        return 'carbon_tax'
+    elif 'standing' in desc_lower:
+        return 'standing_charges'
+    elif 'capacity' in desc_lower:
+        return 'capacity_charges'
+    else:
+        return 'other'
