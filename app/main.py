@@ -9,6 +9,7 @@ load_dotenv()
 from app.routers import (
     uploads,
     utilities,
+    water,              # <-- Add your new water.py router here!
     drawings,
     tenders,
     compliance,
@@ -18,16 +19,29 @@ from app.routers import (
     compliance_score,
     compliance_leaderboard,
     confirmations,
-    compliance_history,
     compliance_tasks,
     audit,
-    user,  # Add the user router
-    hotel_facilities  # Add the hotel facilities router
+    user,               # User management
+    hotel_facilities    # Hotel facilities management
 )
 
-app = FastAPI(title="JMK Project API", version="1.0.0")
+# Define nice tag display for your /docs UI
+openapi_tags = [
+    {"name": "utilities", "description": "Electricity, gas, and overall utilities endpoints."},
+    {"name": "water", "description": "Water meter, Smartflow, and water bill endpoints."},
+    {"name": "users", "description": "User management (create, list, edit, etc.)"},
+    {"name": "hotels", "description": "Endpoints for hotel facilities and meta."},
+    {"name": "compliance", "description": "Compliance checks, uploads, and scoring."},
+    # Add other tag descriptions as needed
+]
 
-# CORS configuration
+app = FastAPI(
+    title="JMK Project API",
+    version="1.0.0",
+    openapi_tags=openapi_tags
+)
+
+# --- CORS ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -41,17 +55,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Auto-create admin user on startup
+# --- Create Default Admin on Startup (if no users) ---
 @app.on_event("startup")
 async def create_admin_user():
-    """Create default admin user if no users exist"""
     try:
         from app.routers.user import load_users, save_users, hash_password
         import uuid
         from datetime import datetime
-        
+
         users = load_users()
-        if not users:  # Only create if no users exist
+        if not users:
             admin_id = str(uuid.uuid4())
             admin_user = {
                 "name": "System Admin",
@@ -74,28 +87,25 @@ async def create_admin_user():
     except Exception as e:
         print(f"❌ Error creating admin user: {e}")
 
-# Include routers
-app.include_router(utilities.router)  # This gives you /utilities/... endpoints
+# --- ROUTERS (all with tags/prefixes for nice docs) ---
+
+app.include_router(utilities.router, prefix="/utilities", tags=["utilities"])
+app.include_router(water.router, prefix="/water", tags=["water"])           # <--- NEW!
 app.include_router(tenders.router)
 app.include_router(drawings.router)
 app.include_router(compliance.router, prefix="/compliance", tags=["compliance"])
 app.include_router(files.router)
-app.include_router(monthly_checklist.router, prefix="/api/compliance", tags=["monthly-checklist"])
-app.include_router(due_tasks.router, prefix="/api/compliance", tags=["due-tasks"])
-app.include_router(compliance_score.router, prefix="/api/compliance", tags=["compliance-score"])
-app.include_router(compliance_leaderboard.router, prefix="/api/compliance", tags=["leaderboard"])
-app.include_router(confirmations.router, prefix="/api/compliance", tags=["confirmations"])
-# app.include_router(compliance_history.router, prefix="/api/compliance", tags=["compliance-history"])  # DISABLED - replaced by audit.py
-app.include_router(compliance_tasks.router, prefix="/api/compliance", tags=["compliance-tasks"])
-app.include_router(audit.router, prefix="/api/compliance", tags=["audit"])
-
-# User management router
+app.include_router(monthly_checklist.router, prefix="/api/compliance", tags=["compliance"])
+app.include_router(due_tasks.router, prefix="/api/compliance", tags=["compliance"])
+app.include_router(compliance_score.router, prefix="/api/compliance", tags=["compliance"])
+app.include_router(compliance_leaderboard.router, prefix="/api/compliance", tags=["compliance"])
+app.include_router(confirmations.router, prefix="/api/compliance", tags=["compliance"])
+app.include_router(compliance_tasks.router, prefix="/api/compliance", tags=["compliance"])
+app.include_router(audit.router, prefix="/api/compliance", tags=["compliance"])
 app.include_router(user.router, prefix="/api/users", tags=["users"])
-
-# Hotel facilities router
 app.include_router(hotel_facilities.router, prefix="/api/hotels", tags=["hotels"])
 
-# Base routes
+# --- BASE ENDPOINTS ---
 @app.get("/")
 def read_root():
     return {"message": "JMK Project API is running 🚀"}
@@ -103,3 +113,4 @@ def read_root():
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
