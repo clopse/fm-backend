@@ -751,7 +751,7 @@ async def get_bill_pdf(bill_id: str):
         print(f"Error getting bill PDF: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get bill PDF: {str(e)}")
 
-@router.get("/utilities/{hotel_id}/bills")
+@router.get("/{hotel_id}/bills")
 async def get_raw_bills_data(hotel_id: str, year: str = None):
     """Get raw bill data with full DocuPipe JSON for advanced filtering"""
     try:
