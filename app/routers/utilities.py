@@ -570,6 +570,80 @@ def get_utility_data_for_hotel_year(hotel_id: str, year: str):
     except Exception as e:
         print(f"Error in get_utility_data_for_hotel_year: {e}")
         return []
+@router.get("/utilities/{hotel_id}/bills")
+async def get_raw_bills_data(hotel_id: str, year: str = None):
+    """Get raw bill data with full DocuPipe JSON for advanced filtering"""
+    try:
+        current_year = datetime.now().year
+        years_to_check = [year] if year else [str(current_year), str(current_year - 1)]
+        
+        all_bills = []
+        
+        for check_year in years_to_check:
+            bills = get_utility_data_for_hotel_year(hotel_id, check_year)
+            
+            for bill in bills:
+                try:
+                    if not isinstance(bill, dict):
+                        continue
+                    
+                    summary = bill.get('summary', {})
+                    raw_data = bill.get('raw_data', bill)
+                    
+                    utility_type = bill.get('utility_type')
+                    if not utility_type:
+                        if 'supplier' in raw_data and 'arden' in raw_data.get('supplier', '').lower():
+                            utility_type = 'electricity'
+                        elif 'supplierInfo' in raw_data or 'documentType' in raw_data:
+                            utility_type = 'gas'
+                        else:
+                            utility_type = 'unknown'
+                    
+                    bill_date = (
+                        summary.get('bill_date') or
+                        raw_data.get('billingPeriod', {}).get('endDate') or
+                        raw_data.get('billSummary', {}).get('billingPeriodEndDate') or
+                        ''
+                    )
+                    
+                    enhanced_bill = {
+                        **bill,
+                        'utility_type': utility_type,
+                        'enhanced_summary': {
+                            **summary,
+                            'bill_date': bill_date,
+                            'month_year': bill_date[:7] if bill_date else '',
+                            'year': bill_date[:4] if bill_date else ''
+                        }
+                    }
+                    
+                    all_bills.append(enhanced_bill)
+                    
+                except Exception as e:
+                    print(f"Error processing bill: {e}")
+                    continue
+        
+        all_bills.sort(
+            key=lambda x: x.get('enhanced_summary', {}).get('bill_date', ''), 
+            reverse=True
+        )
+        
+        return {
+            "hotel_id": hotel_id,
+            "year": year or "all",
+            "bills": all_bills,
+            "total_bills": len(all_bills),
+            "bills_by_type": {
+                "electricity": len([b for b in all_bills if b.get('utility_type') == 'electricity']),
+                "gas": len([b for b in all_bills if b.get('utility_type') == 'gas']),
+                "water": len([b for b in all_bills if b.get('utility_type') == 'water']),
+                "unknown": len([b for b in all_bills if b.get('utility_type') == 'unknown'])
+            }
+        }
+        
+    except Exception as e:
+        print(f"Error fetching raw bills: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch bills: {str(e)}")
 
 @router.get("/utilities/{hotel_id}/{year}")
 async def get_utilities_data(hotel_id: str, year: int):
@@ -681,81 +755,6 @@ async def get_utilities_data(hotel_id: str, year: int):
     except Exception as e:
         print(f"Error fetching utilities data for {hotel_id} {year}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch utilities data: {str(e)}")
-
-@router.get("/utilities/{hotel_id}/bills")
-async def get_raw_bills_data(hotel_id: str, year: str = None):
-    """Get raw bill data with full DocuPipe JSON for advanced filtering"""
-    try:
-        current_year = datetime.now().year
-        years_to_check = [year] if year else [str(current_year), str(current_year - 1)]
-        
-        all_bills = []
-        
-        for check_year in years_to_check:
-            bills = get_utility_data_for_hotel_year(hotel_id, check_year)
-            
-            for bill in bills:
-                try:
-                    if not isinstance(bill, dict):
-                        continue
-                    
-                    summary = bill.get('summary', {})
-                    raw_data = bill.get('raw_data', bill)
-                    
-                    utility_type = bill.get('utility_type')
-                    if not utility_type:
-                        if 'supplier' in raw_data and 'arden' in raw_data.get('supplier', '').lower():
-                            utility_type = 'electricity'
-                        elif 'supplierInfo' in raw_data or 'documentType' in raw_data:
-                            utility_type = 'gas'
-                        else:
-                            utility_type = 'unknown'
-                    
-                    bill_date = (
-                        summary.get('bill_date') or
-                        raw_data.get('billingPeriod', {}).get('endDate') or
-                        raw_data.get('billSummary', {}).get('billingPeriodEndDate') or
-                        ''
-                    )
-                    
-                    enhanced_bill = {
-                        **bill,
-                        'utility_type': utility_type,
-                        'enhanced_summary': {
-                            **summary,
-                            'bill_date': bill_date,
-                            'month_year': bill_date[:7] if bill_date else '',
-                            'year': bill_date[:4] if bill_date else ''
-                        }
-                    }
-                    
-                    all_bills.append(enhanced_bill)
-                    
-                except Exception as e:
-                    print(f"Error processing bill: {e}")
-                    continue
-        
-        all_bills.sort(
-            key=lambda x: x.get('enhanced_summary', {}).get('bill_date', ''), 
-            reverse=True
-        )
-        
-        return {
-            "hotel_id": hotel_id,
-            "year": year or "all",
-            "bills": all_bills,
-            "total_bills": len(all_bills),
-            "bills_by_type": {
-                "electricity": len([b for b in all_bills if b.get('utility_type') == 'electricity']),
-                "gas": len([b for b in all_bills if b.get('utility_type') == 'gas']),
-                "water": len([b for b in all_bills if b.get('utility_type') == 'water']),
-                "unknown": len([b for b in all_bills if b.get('utility_type') == 'unknown'])
-            }
-        }
-        
-    except Exception as e:
-        print(f"Error fetching raw bills: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch bills: {str(e)}")
 
 @router.get("/utilities/debug/actual-structure/{hotel_id}")
 async def debug_actual_structure(hotel_id: str, year: str = "2025"):
