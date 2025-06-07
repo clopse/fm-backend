@@ -13,7 +13,8 @@ s3_client = boto3.client('s3')
 
 # Device IDs per hotel (expand this as needed)
 WATER_DEVICES = {
-    "hiex-dublincc": [222710131040, 222710251186],
+    "hiex": [222710131040, 222710251186],
+    "hiex-dublincc": [222710131040, 222710251186],  # legacy support
     # add more hotel_ids and their device_ids here
 }
 
@@ -136,7 +137,7 @@ async def get_water_latest(hotel_id: str):
         raise HTTPException(404, f"Could not fetch water summary: {e}")
 
 @router.get("/water/{hotel_id}/monthly")
-async def get_monthly_water(hotel_id: str, rooms: int = 100):
+async def get_monthly_water(hotel_id: str, rooms: int = 198):
     """
     Returns monthly water usage, aggregated from historical SmartFlow data.
     First tries to use smartflow-usage.json, falls back to daily data.
