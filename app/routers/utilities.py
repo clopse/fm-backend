@@ -24,7 +24,7 @@ S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "jmk-project-uploads")
 # Initialize S3 client
 s3_client = boto3.client('s3')
 
-@router.post("/utilities/precheck")
+@router.\1("\2")
 async def precheck_bill_type(file: UploadFile = File(...)):
     """Quick bill type detection for frontend preview"""
     try:
@@ -109,7 +109,7 @@ def send_upload_webhook(hotel_id, bill_type, filename, billing_start, s3_path, s
     except Exception as e:
         print(f"Webhook failed: {e}")
 
-@router.post("/utilities/parse-and-save")
+@router.\1("\2")
 async def parse_and_save(
     background_tasks: BackgroundTasks,
     hotel_id: str = Form(...),
@@ -571,7 +571,7 @@ def get_utility_data_for_hotel_year(hotel_id: str, year: str):
         print(f"Error in get_utility_data_for_hotel_year: {e}")
         return []
 
-@router.get("/utilities/bill-pdf/{hotel_id}/{utility_type}/{year}/{filename}")
+@router.\1("\2")
 async def get_bill_pdf_direct(hotel_id: str, utility_type: str, year: str, filename: str):
     """Download PDF for a specific bill using direct S3 path"""
     try:
@@ -607,7 +607,7 @@ async def get_bill_pdf_direct(hotel_id: str, utility_type: str, year: str, filen
     except Exception as e:
         print(f"Error getting bill PDF: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get bill PDF: {str(e)}")
-@router.get("/utilities/bill-pdf/{bill_id}")
+@router.\1("\2")
 async def get_bill_pdf(bill_id: str):
     """Download PDF for a specific bill"""
     try:
@@ -826,7 +826,7 @@ async def get_raw_bills_data(hotel_id: str, year: str = None):
         print(f"Error fetching raw bills: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch bills: {str(e)}")
 
-@router.get("/utilities/{hotel_id}/{year}")
+@router.\1("\2")
 async def get_utilities_data(hotel_id: str, year: int):
     """Get utility bills data from S3 for charts - S3 ONLY VERSION"""
     try:
@@ -937,7 +937,7 @@ async def get_utilities_data(hotel_id: str, year: int):
         print(f"Error fetching utilities data for {hotel_id} {year}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch utilities data: {str(e)}")
 
-@router.get("/utilities/debug/actual-structure/{hotel_id}")
+@router.\1("\2")
 async def debug_actual_structure(hotel_id: str, year: str = "2025"):
     """Debug endpoint to check the actual S3 structure based on your real paths"""
     try:
@@ -980,7 +980,7 @@ async def debug_actual_structure(hotel_id: str, year: str = "2025"):
     except Exception as e:
         return {"error": str(e)}
 
-@router.get("/utilities/debug/test-single-bill/{hotel_id}")
+@router.\1("\2")
 async def debug_test_single_bill(hotel_id: str, year: str = "2025"):
     """Test reading a single bill to verify the process"""
     try:
