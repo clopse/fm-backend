@@ -1,8 +1,3 @@
-# FastAPI Utilities Router with S3 Integration for Utility Bill Management
-
-I'll combine these segments into a complete working utilities router with all the necessary functions and error handling. The combined code properly integrates with S3 for storage and retrieval of utility bills, provides data extraction, and includes debugging endpoints.
-
-```python
 from fastapi import APIRouter, UploadFile, File, Form, Depends, BackgroundTasks, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
