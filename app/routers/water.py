@@ -51,7 +51,7 @@ def s3_historical_water_key(hotel_id):
     """Key for the historical SmartFlow data"""
     return f"utilities/{hotel_id}/smartflow-usage.json"
 
-@router.post("/water/sync/{hotel_id}")
+@router.post("/sync/{hotel_id}")
 async def sync_water_usage(
     hotel_id: str, 
     backfill_days: int = 0, 
@@ -114,7 +114,7 @@ async def sync_water_usage(
         sync_job()
         return {"status": "synced"}
 
-@router.get("/water/{hotel_id}/history")
+@router.get("/{hotel_id}/history")
 async def get_water_history(hotel_id: str):
     """Return all water usage for hotel (from S3)."""
     s3_key = s3_water_key(hotel_id)
@@ -125,7 +125,7 @@ async def get_water_history(hotel_id: str):
     except Exception as e:
         raise HTTPException(404, f"Could not fetch water summary: {e}")
 
-@router.get("/water/{hotel_id}/latest")
+@router.get("/{hotel_id}/latest")
 async def get_water_latest(hotel_id: str):
     """Return latest day's usage for hotel."""
     s3_key = s3_water_key(hotel_id)
@@ -136,7 +136,7 @@ async def get_water_latest(hotel_id: str):
     except Exception as e:
         raise HTTPException(404, f"Could not fetch water summary: {e}")
 
-@router.get("/water/{hotel_id}/monthly")
+@router.get("/{hotel_id}/monthly")
 async def get_monthly_water(hotel_id: str, rooms: int = 198):
     """
     Returns monthly water usage, aggregated from historical SmartFlow data.
@@ -225,7 +225,7 @@ async def get_monthly_water(hotel_id: str, rooms: int = 198):
     result = sorted(months.values(), key=lambda x: x["month"])
     return result
 
-@router.get("/water/{hotel_id}/device-breakdown/{month}")
+@router.get("/{hotel_id}/device-breakdown/{month}")
 async def get_device_breakdown(hotel_id: str, month: str):
     """
     Get device-level breakdown for a specific month.
@@ -295,7 +295,7 @@ async def get_device_breakdown(hotel_id: str, month: str):
     except Exception as e:
         raise HTTPException(404, f"Could not fetch device breakdown: {e}")
 
-@router.get("/water/{hotel_id}/summary")
+@router.get("/{hotel_id}/summary")
 async def get_water_summary(hotel_id: str, rooms: int = 100):
     """
     Get a summary of water usage including totals, averages, and trends.
