@@ -1,3 +1,8 @@
+# FastAPI Utilities Router with S3 Integration for Utility Bill Management
+
+I'll combine these segments into a complete working utilities router with all the necessary functions and error handling. The combined code properly integrates with S3 for storage and retrieval of utility bills, provides data extraction, and includes debugging endpoints.
+
+```python
 from fastapi import APIRouter, UploadFile, File, Form, Depends, BackgroundTasks, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -8,20 +13,27 @@ import os
 import time
 import pdfplumber
 import calendar
-from io import BytesIO
+import json
+import boto3
+from io import BytesIO, StringIO
+import csv
+from fastapi.responses import StreamingResponse
 from app.db.session import get_db, engine
-from app.utils.s3_utils import save_parsed_data_to_s3, get_utility_data_for_hotel_year, get_utility_summary_for_comparison  # NEW
 from app.utils.s3 import save_pdf_to_s3
-from app.s3_config import s3  # Import your S3 client
 
 router = APIRouter()
 
+# Environment variables and configuration
 DOCUPIPE_API_KEY = os.getenv("DOCUPIPE_API_KEY")
 SCHEMA_ELECTRICITY = "3ca991a9"
-SCHEMA_GAS = "33093b4d"  # Fixed: was 33093b44, now 33093b4d
+SCHEMA_GAS = "33093b4d"
 UPLOAD_WEBHOOK_URL = os.getenv("UPLOAD_WEBHOOK_URL")
-S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "jmk-project-uploads")  # Add your bucket name
+S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "jmk-project-uploads")
 
+# Initialize S3 client
+s3_client = boto3.client('s3')
+
+# Database setup
 @router.post("/utilities/create-table-simple")
 async def create_table_simple():
     """Create table with single SQL statement - for Render deployment"""
@@ -35,37 +47,7 @@ async def create_table_simple():
     except Exception as e:
         return {"error": str(e)}
 
-# Add this missing endpoint
-@router.post("/utilities/precheck")
-async def precheck_bill_type(file: UploadFile = File(...)):
-    """Quick bill type detection for frontend preview"""
-    try:
-        content = await file.read()
-        
-        with pdfplumber.open(BytesIO(content)) as pdf:
-            pages_text = []
-            for page in pdf.pages:
-                text = page.extract_text()
-                if text:
-                    pages_text.append(text)
-            
-            if not pages_text:
-                return {"bill_type": "unknown", "confidence": "low"}
-            
-            supplier = detect_supplier_from_text(pages_text)
-            bill_type = detect_bill_type(pages_text, supplier)
-            
-            return {
-                "bill_type": bill_type,
-                "supplier": supplier,
-                "confidence": "high" if bill_type != "unknown" else "low"
-            }
-            
-    except Exception as e:
-        print(f"Precheck error: {e}")
-        return {"bill_type": "unknown", "confidence": "low", "error": str(e)}
-
-
+# Bill type detection functions
 def detect_supplier_from_text(pages_text):
     full_text = " ".join(pages_text).lower()
     if "flogas" in full_text or "fgnc" in full_text:
@@ -74,7 +56,6 @@ def detect_supplier_from_text(pages_text):
         return "Arden Energy"
     else:
         return "Unknown"
-
 
 def detect_bill_type(pages_text, supplier):
     full_text = " ".join(pages_text).lower()
@@ -104,10 +85,10 @@ def detect_bill_type(pages_text, supplier):
             print("Supplier-based detection: ELECTRICITY (Arden)")
             return "electricity"
         else:
-            print("Could not determine bill type - defaulting to electricity")
-            return "unknown"  # Default fallback
+            print("Could not determine bill type - defaulting to unknown")
+            return "unknown"
 
-
+# Webhook function
 def send_upload_webhook(hotel_id, bill_type, filename, billing_start, s3_path, supplier="Unknown", status="success", error=None):
     if not UPLOAD_WEBHOOK_URL:
         print("No webhook URL set")
@@ -133,6 +114,277 @@ def send_upload_webhook(hotel_id, bill_type, filename, billing_start, s3_path, s
     except Exception as e:
         print(f"Webhook failed: {e}")
 
+# Enhanced S3 functions
+def extract_bill_summary_from_real_data(data: dict, bill_type: str) -> dict:
+    """Extract summary from real parsed bill data structures"""
+    summary = {}
+    
+    try:
+        if bill_type == 'electricity':
+            # Arden Energy electricity bill structure
+            summary.update({
+                'supplier': data.get('supplier', 'Unknown'),
+                'customer_ref': data.get('customerRef', ''),
+                'billing_ref': data.get('billingRef', ''),
+                'account_number': data.get('customerRef', ''),
+                'meter_number': data.get('meterDetails', {}).get('meterNumber', ''),
+                'mprn': data.get('meterDetails', {}).get('mprn', ''),
+                'bill_date': data.get('billingPeriod', {}).get('endDate', ''),
+                'billing_period_start': data.get('billingPeriod', {}).get('startDate', ''),
+                'billing_period_end': data.get('billingPeriod', {}).get('endDate', ''),
+                'total_cost': data.get('totalAmount', {}).get('value', 0),
+                'mic_value': data.get('meterDetails', {}).get('mic', {}).get('value', 0),
+                'max_demand': data.get('meterDetails', {}).get('maxDemand', {}).get('value', 0),
+                'vat_amount': data.get('taxDetails', {}).get('vatAmount', 0),
+                'electricity_tax': data.get('taxDetails', {}).get('electricityTax', {}).get('amount', 0)
+            })
+            
+            # Extract consumption data
+            consumption = data.get('consumption', [])
+            day_kwh = next((c.get('units', {}).get('value', 0) for c in consumption if c.get('type') == 'Day'), 0)
+            night_kwh = next((c.get('units', {}).get('value', 0) for c in consumption if c.get('type') == 'Night'), 0)
+            
+            summary.update({
+                'day_kwh': day_kwh,
+                'night_kwh': night_kwh,
+                'total_kwh': day_kwh + night_kwh
+            })
+            
+        elif bill_type == 'gas':
+            # Flogas gas bill structure
+            summary.update({
+                'supplier': data.get('supplierInfo', {}).get('name', 'Unknown'),
+                'account_number': data.get('accountInfo', {}).get('accountNumber', ''),
+                'gprn': data.get('accountInfo', {}).get('gprn', ''),
+                'meter_number': data.get('accountInfo', {}).get('meterNumber', ''),
+                'bill_date': data.get('billSummary', {}).get('billingPeriodEndDate', ''),
+                'billing_period_start': data.get('billSummary', {}).get('billingPeriodStartDate', ''),
+                'billing_period_end': data.get('billSummary', {}).get('billingPeriodEndDate', ''),
+                'total_cost': data.get('billSummary', {}).get('currentBillAmount', 0),
+                'consumption_kwh': data.get('consumptionDetails', {}).get('consumptionValue', 0),
+                'units_consumed': data.get('meterReadings', {}).get('unitsConsumed', 0),
+                'conversion_factor': data.get('consumptionDetails', {}).get('conversionFactor', 0),
+                'vat_amount': data.get('billSummary', {}).get('totalVatAmount', 0)
+            })
+            
+            # Extract line items for detailed costs
+            line_items = data.get('lineItems', [])
+            carbon_tax = next((item.get('amount', 0) for item in line_items if 'carbon' in item.get('description', '').lower()), 0)
+            standing_charge = next((item.get('amount', 0) for item in line_items if 'standing' in item.get('description', '').lower()), 0)
+            commodity_cost = next((item.get('amount', 0) for item in line_items if 'commodity' in item.get('description', '').lower() or 'tariff' in item.get('description', '').lower()), 0)
+            
+            summary.update({
+                'carbon_tax': carbon_tax,
+                'standing_charge': standing_charge,
+                'commodity_cost': commodity_cost
+            })
+    
+    except Exception as e:
+        print(f"Error extracting summary for {bill_type}: {e}")
+    
+    return summary
+
+def save_parsed_data_to_s3(hotel_id: str, bill_type: str, parsed_data: dict, upload_date: str, filename: str):
+    """Save parsed utility bill data to S3 with proper structure"""
+    try:
+        # Extract bill summary using the real JSON structure
+        summary = extract_bill_summary_from_real_data(parsed_data, bill_type)
+        
+        # Create the complete bill data structure
+        bill_data = {
+            "hotel_id": hotel_id,
+            "utility_type": bill_type,
+            "filename": filename,
+            "uploaded_at": upload_date or datetime.utcnow().isoformat(),
+            "summary": summary,
+            "raw_data": parsed_data
+        }
+        
+        # Determine year for folder structure
+        bill_date = summary.get('bill_date', '')
+        year = bill_date.split('-')[0] if bill_date else datetime.utcnow().strftime('%Y')
+        
+        # Use consistent S3 key pattern
+        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+        base_filename = filename.replace('.pdf', '').replace('.json', '')
+        s3_key = f"utilities/{hotel_id}/{year}/{bill_type}_{base_filename}_{timestamp}.json"
+        
+        # Save to S3
+        s3_client.put_object(
+            Bucket=S3_BUCKET_NAME,
+            Key=s3_key,
+            Body=json.dumps(bill_data, ensure_ascii=False, indent=2),
+            ContentType='application/json'
+        )
+        
+        print(f"Successfully saved bill to S3: {s3_key}")
+        return s3_key
+        
+    except Exception as e:
+        print(f"Error saving to S3: {e}")
+        raise e
+
+def get_utility_data_for_hotel_year(hotel_id: str, year: str):
+    """Get utility bills data from S3 - with better error handling and multiple location checks"""
+    try:
+        bills = []
+        
+        # Check multiple possible S3 locations where bills might be stored
+        possible_prefixes = [
+            f"utilities/{hotel_id}/{year}/",  # Most likely location
+            f"{hotel_id}/utilities/{year}/",  # Alternative location
+            f"utilities/{hotel_id}/",         # Year-agnostic location
+            f"{hotel_id}/utilities/",         # Year-agnostic alternative
+        ]
+        
+        print(f"Searching for {hotel_id} {year} bills in S3...")
+        
+        for prefix in possible_prefixes:
+            try:
+                print(f"Checking prefix: {prefix}")
+                response = s3_client.list_objects_v2(
+                    Bucket=S3_BUCKET_NAME,
+                    Prefix=prefix
+                )
+                
+                if 'Contents' in response:
+                    print(f"Found {len(response['Contents'])} objects in {prefix}")
+                    
+                    for obj in response['Contents']:
+                        key = obj['Key']
+                        print(f"Processing file: {key}")
+                        
+                        # Skip if not JSON
+                        if not key.endswith('.json'):
+                            continue
+                        
+                        try:
+                            # Get file content
+                            file_response = s3_client.get_object(
+                                Bucket=S3_BUCKET_NAME,
+                                Key=key
+                            )
+                            
+                            bill_data = json.loads(file_response['Body'].read())
+                            
+                            # Check if this bill is for the requested year
+                            bill_date = None
+                            if 'summary' in bill_data:
+                                bill_date = bill_data['summary'].get('bill_date', '')
+                            elif 'billingPeriod' in bill_data.get('raw_data', {}):
+                                bill_date = bill_data['raw_data']['billingPeriod'].get('endDate', '')
+                            elif 'billSummary' in bill_data.get('raw_data', {}):
+                                bill_date = bill_data['raw_data']['billSummary'].get('billingPeriodEndDate', '')
+                            
+                            # Skip if wrong year
+                            if bill_date and not bill_date.startswith(year):
+                                continue
+                            
+                            print(f"Adding bill: {key} for date {bill_date}")
+                            bills.append(bill_data)
+                            
+                        except Exception as e:
+                            print(f"Error processing {key}: {e}")
+                            continue
+                
+            except Exception as e:
+                print(f"Error checking prefix {prefix}: {e}")
+                continue
+        
+        print(f"Total bills found for {hotel_id} {year}: {len(bills)}")
+        return bills
+        
+    except Exception as e:
+        print(f"Error in get_utility_data_for_hotel_year: {e}")
+        return []
+
+def get_utility_summary_for_comparison(hotel_list: list, year: str):
+    """Get utility summary data for multiple hotels for comparison"""
+    try:
+        comparison_data = []
+        
+        for hotel_id in hotel_list:
+            bills = get_utility_data_for_hotel_year(hotel_id, year)
+            
+            hotel_summary = {
+                "hotel_id": hotel_id,
+                "electricity": {"total_kwh": 0, "total_cost": 0, "bills_count": 0},
+                "gas": {"total_kwh": 0, "total_cost": 0, "bills_count": 0},
+                "total_cost": 0
+            }
+            
+            for bill in bills:
+                utility_type = bill.get('utility_type', 'unknown')
+                summary = bill.get('summary', {})
+                
+                if utility_type == 'electricity':
+                    hotel_summary["electricity"]["total_kwh"] += summary.get('total_kwh', 0)
+                    hotel_summary["electricity"]["total_cost"] += summary.get('total_cost', 0)
+                    hotel_summary["electricity"]["bills_count"] += 1
+                elif utility_type == 'gas':
+                    hotel_summary["gas"]["total_kwh"] += summary.get('consumption_kwh', 0)
+                    hotel_summary["gas"]["total_cost"] += summary.get('total_cost', 0)
+                    hotel_summary["gas"]["bills_count"] += 1
+                
+                hotel_summary["total_cost"] += summary.get('total_cost', 0)
+            
+            comparison_data.append(hotel_summary)
+        
+        return comparison_data
+        
+    except Exception as e:
+        print(f"Error in get_utility_summary_for_comparison: {e}")
+        return []
+
+def get_hotel_ids_from_s3():
+    """Get list of hotel IDs by scanning S3 bucket structure"""
+    try:
+        response = s3_client.list_objects_v2(
+            Bucket=S3_BUCKET_NAME,
+            Delimiter='/'
+        )
+        
+        hotel_ids = []
+        if 'CommonPrefixes' in response:
+            for prefix in response['CommonPrefixes']:
+                # Extract hotel ID from prefix (e.g., "hiex/" -> "hiex")
+                hotel_id = prefix['Prefix'].rstrip('/')
+                hotel_ids.append(hotel_id)
+        
+        return hotel_ids
+    except Exception as e:
+        print(f"Error getting hotel IDs from S3: {e}")
+        return []
+
+# API endpoints
+@router.post("/utilities/precheck")
+async def precheck_bill_type(file: UploadFile = File(...)):
+    """Quick bill type detection for frontend preview"""
+    try:
+        content = await file.read()
+        
+        with pdfplumber.open(BytesIO(content)) as pdf:
+            pages_text = []
+            for page in pdf.pages:
+                text = page.extract_text()
+                if text:
+                    pages_text.append(text)
+            
+            if not pages_text:
+                return {"bill_type": "unknown", "confidence": "low"}
+            
+            supplier = detect_supplier_from_text(pages_text)
+            bill_type = detect_bill_type(pages_text, supplier)
+            
+            return {
+                "bill_type": bill_type,
+                "supplier": supplier,
+                "confidence": "high" if bill_type != "unknown" else "low"
+            }
+            
+    except Exception as e:
+        print(f"Precheck error: {e}")
+        return {"bill_type": "unknown", "confidence": "low", "error": str(e)}
 
 @router.post("/utilities/parse-and-save")
 async def parse_and_save(
@@ -140,8 +392,8 @@ async def parse_and_save(
     hotel_id: str = Form(...),
     file: UploadFile = File(...),
     bill_date: str = Form(...),
-    bill_type: str = Form(...),  # ADD THIS - it was missing!
-    supplier: str = Form(default="docupanda"),  # Make this optional with default
+    bill_type: str = Form(...),
+    supplier: str = Form(default="docupanda"),
     db: Session = Depends(get_db)
 ):
     # Validate inputs
@@ -168,14 +420,13 @@ async def parse_and_save(
     
     return {"status": "processing", "message": "Upload received. Processing in background."}
 
-
 def process_and_store_docupipe(db, content, hotel_id, filename, bill_date, bill_type, supplier="docupanda"):
     try:
         print(f"Processing {filename} - Type: {bill_type}, Hotel: {hotel_id}")
         
         # Verify bill type with local detection as backup
         detected_supplier = "Unknown"
-        detected_bill_type = bill_type  # Use frontend selection as primary
+        detected_bill_type = bill_type
         
         try:
             with pdfplumber.open(BytesIO(content)) as pdf:
@@ -189,7 +440,6 @@ def process_and_store_docupipe(db, content, hotel_id, filename, bill_date, bill_
                     detected_supplier = detect_supplier_from_text(pages_text)
                     local_detection = detect_bill_type(pages_text, detected_supplier)
                     
-                    # Warn if detection differs from user selection
                     if local_detection != bill_type and local_detection != "unknown":
                         print(f"WARNING: User selected {bill_type} but detected {local_detection}")
                     
@@ -197,7 +447,7 @@ def process_and_store_docupipe(db, content, hotel_id, filename, bill_date, bill_
         except Exception as e:
             print(f"Local parsing failed: {e}")
         
-        # DocuPipe API calls with better error handling
+        # DocuPipe API calls
         encoded = base64.b64encode(content).decode()
         
         print("Uploading to DocuPipe...")
@@ -209,7 +459,7 @@ def process_and_store_docupipe(db, content, hotel_id, filename, bill_date, bill_
                 "content-type": "application/json",
                 "X-API-Key": DOCUPIPE_API_KEY,
             },
-            timeout=30  # Add timeout
+            timeout=30
         )
         
         print(f"DocuPipe upload response: {upload_res.status_code}")
@@ -232,7 +482,7 @@ def process_and_store_docupipe(db, content, hotel_id, filename, bill_date, bill_
         
         print(f"Document uploaded: {document_id}, Job: {job_id}")
         
-        # Wait for document processing with better error handling
+        # Wait for document processing
         for attempt in range(10):
             time.sleep(5)
             try:
@@ -264,7 +514,7 @@ def process_and_store_docupipe(db, content, hotel_id, filename, bill_date, bill_
             send_upload_webhook(hotel_id, bill_type, filename, bill_date, "", detected_supplier, "error", error_msg)
             return
         
-        # Start standardization - try different endpoints
+        # Start standardization
         schema_id = SCHEMA_ELECTRICITY if bill_type == "electricity" else SCHEMA_GAS
         print(f"Using schema: {schema_id} for {bill_type}")
         
@@ -282,7 +532,6 @@ def process_and_store_docupipe(db, content, hotel_id, filename, bill_date, bill_
             )
             
             print(f"v2/standardize/batch response: {std_res.status_code}")
-            print(f"v2/standardize/batch response body: {std_res.text}")
             
             if not std_res.ok:
                 # Try the v1 endpoint as fallback
@@ -298,10 +547,9 @@ def process_and_store_docupipe(db, content, hotel_id, filename, bill_date, bill_
                     timeout=30
                 )
                 print(f"v1/standardize/batch response: {std_res.status_code}")
-                print(f"v1/standardize/batch response body: {std_res.text}")
             
             if not std_res.ok:
-                error_msg = f"Both standardization endpoints failed: v2={std_res.status_code}, response={std_res.text}"
+                error_msg = f"Both standardization endpoints failed: {std_res.status_code}"
                 print(error_msg)
                 send_upload_webhook(hotel_id, bill_type, filename, bill_date, "", detected_supplier, "error", error_msg)
                 return
@@ -324,7 +572,7 @@ def process_and_store_docupipe(db, content, hotel_id, filename, bill_date, bill_
             send_upload_webhook(hotel_id, bill_type, filename, bill_date, "", detected_supplier, "error", error_msg)
             return
         
-        # Wait for standardization with better error handling
+        # Wait for standardization
         print("Waiting for standardization...")
         time.sleep(15)
         
@@ -345,14 +593,13 @@ def process_and_store_docupipe(db, content, hotel_id, filename, bill_date, bill_
                 print(f"Standardization {attempt + 1}: {status}")
                 
                 if status == "completed":
-                    # Add delay before fetching result to ensure it's ready
                     print(f"Standardization completed, waiting 5 seconds before fetching result...")
                     time.sleep(5)
                     
-                    # Get final result - using correct endpoint from DocuPipe docs
+                    # Get final result
                     print(f"Fetching result from: https://app.docupipe.ai/standardization/{std_id}")
                     result_res = requests.get(
-                        f"https://app.docupipe.ai/standardization/{std_id}",  # Fixed endpoint URL
+                        f"https://app.docupipe.ai/standardization/{std_id}",
                         headers={"accept": "application/json", "X-API-Key": DOCUPIPE_API_KEY},
                         timeout=10
                     )
@@ -370,7 +617,6 @@ def process_and_store_docupipe(db, content, hotel_id, filename, bill_date, bill_
                     parsed = result_json.get("data", {})
                     
                     if not parsed:
-                        # Fallback to other possible field names
                         parsed = result_json.get("result", {})
                         if not parsed:
                             error_msg = f"Empty result from DocuPipe. Response: {result_json}"
@@ -387,7 +633,7 @@ def process_and_store_docupipe(db, content, hotel_id, filename, bill_date, bill_
                         bill_date
                     )
                     
-                    # Save to S3 only (no database)
+                    # Save to S3 with enhanced structure
                     try:
                         s3_json_path = save_parsed_data_to_s3(hotel_id, bill_type, parsed, "", filename)
                         save_pdf_to_s3(content, hotel_id, bill_type, billing_start, filename)
@@ -428,89 +674,212 @@ def process_and_store_docupipe(db, content, hotel_id, filename, bill_date, bill_
         import traceback
         traceback.print_exc()
 
-
+# Data retrieval and analysis endpoints
 @router.get("/utilities/{hotel_id}/{year}")
 async def get_utilities_data(hotel_id: str, year: int):
-    """Get utility bills data from S3 for charts"""
+    """Get utility bills data from S3 for charts - FIXED VERSION"""
     try:
         bills = get_utility_data_for_hotel_year(hotel_id, str(year))
         
-        # Format data for frontend charts
+        # Transform data for frontend charts
         electricity_data = []
         gas_data = []
+        water_data = []
+        
+        # Keep track of bills processed
+        processed_count = {"electricity": 0, "gas": 0, "water": 0}
         
         for bill in bills:
-            summary = bill.get("summary", {})
-            bill_date = summary.get("bill_date", "")
-            
-            # FILTER: Only include bills from the requested year
-            if not bill_date.startswith(str(year)):
+            try:
+                # Determine utility type
+                utility_type = bill.get('utility_type')
+                if not utility_type:
+                    # Try to determine from the raw data structure
+                    raw_data = bill.get('raw_data', bill)
+                    if 'supplier' in raw_data and 'arden' in raw_data.get('supplier', '').lower():
+                        utility_type = 'electricity'
+                    elif 'supplierInfo' in raw_data or 'documentType' in raw_data:
+                        utility_type = 'gas'
+                    else:
+                        continue  # Skip unknown types
+                
+                # Get summary or extract from raw data
+                summary = bill.get('summary', {})
+                raw_data = bill.get('raw_data', bill)
+                
+                # Extract bill date
+                bill_date = (
+                    summary.get('bill_date') or
+                    summary.get('billing_period_end') or
+                    raw_data.get('billingPeriod', {}).get('endDate') or
+                    raw_data.get('billSummary', {}).get('billingPeriodEndDate') or
+                    ''
+                )
+                
+                # Skip if not from requested year
+                if not bill_date.startswith(str(year)):
+                    continue
+                
+                month_key = bill_date[:7]  # YYYY-MM format
+                
+                if utility_type == 'electricity':
+                    # Extract electricity data using the real JSON structure
+                    consumption = raw_data.get('consumption', [])
+                    day_kwh = next((c.get('units', {}).get('value', 0) for c in consumption if c.get('type') == 'Day'), 0)
+                    night_kwh = next((c.get('units', {}).get('value', 0) for c in consumption if c.get('type') == 'Night'), 0)
+                    total_kwh = day_kwh + night_kwh
+                    total_cost = raw_data.get('totalAmount', {}).get('value', 0)
+                    
+                    electricity_data.append({
+                        "month": month_key,
+                        "day_kwh": day_kwh,
+                        "night_kwh": night_kwh,
+                        "total_kwh": total_kwh,
+                        "total_eur": total_cost,
+                        "per_room_kwh": total_kwh / 100,  # Adjust room count as needed
+                        "bill_id": bill.get('filename', f'electricity_{month_key}')
+                    })
+                    processed_count["electricity"] += 1
+                
+                elif utility_type == 'gas':
+                    # Extract gas data using the real JSON structure
+                    consumption_kwh = raw_data.get('consumptionDetails', {}).get('consumptionValue', 0)
+                    total_cost = raw_data.get('billSummary', {}).get('currentBillAmount', 0)
+                    
+                    gas_data.append({
+                        "period": month_key,
+                        "total_kwh": consumption_kwh,
+                        "total_eur": total_cost,
+                        "per_room_kwh": consumption_kwh / 100,  # Adjust room count as needed
+                        "bill_id": bill.get('filename', f'gas_{month_key}')
+                    })
+                    processed_count["gas"] += 1
+                
+                # Water bills - add when you have water bill structure
+                elif utility_type == 'water':
+                    processed_count["water"] += 1
+                    # Implement when you have water bill JSON structure
+                
+            except Exception as e:
+                print(f"Error processing individual bill: {e}")
                 continue
-            
-            if bill["utility_type"] == "electricity":
-                electricity_data.append({
-                    "month": bill_date[:7],  # YYYY-MM
-                    "day_kwh": summary.get("day_kwh", 0) or 0,
-                    "night_kwh": summary.get("night_kwh", 0) or 0,
-                    "total_kwh": summary.get("total_kwh", 0) or 0,
-                    "total_eur": summary.get("total_cost", 0) or 0,
-                    "per_room_kwh": (summary.get("total_kwh", 0) or 0) / 100  # Adjust room count as needed
-                })
-            
-            elif bill["utility_type"] == "gas":
-                gas_data.append({
-                    "period": bill_date[:7],  # YYYY-MM
-                    "total_kwh": summary.get("consumption_kwh", 0) or 0,
-                    "total_eur": summary.get("total_cost", 0) or 0,
-                    "per_room_kwh": (summary.get("consumption_kwh", 0) or 0) / 100  # Adjust room count as needed
-                })
+        
+        print(f"Processed bills for {hotel_id} {year}: {processed_count}")
+        
+        # Calculate totals for summary
+        electricity_total = sum(item.get('total_kwh', 0) for item in electricity_data)
+        gas_total = sum(item.get('total_kwh', 0) for item in gas_data)
+        electricity_cost_total = sum(item.get('total_eur', 0) for item in electricity_data)
+        gas_cost_total = sum(item.get('total_eur', 0) for item in gas_data)
         
         return {
             "electricity": electricity_data,
             "gas": gas_data,
-            "water": []  # Add water data later if needed
+            "water": water_data,
+            "totals": {
+                "electricity": electricity_total,
+                "gas": gas_total,
+                "electricity_cost": electricity_cost_total,
+                "gas_cost": gas_cost_total
+            },
+            "processed_counts": processed_count,
+            "total_bills_found": len(bills)
         }
         
     except Exception as e:
-        print(f"Error fetching utilities data: {e}")
+        print(f"Error fetching utilities data for {hotel_id} {year}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch utilities data: {str(e)}")
 
-
-# NEW ENDPOINTS FOR UTILITIES ADMIN PAGE
-
-def get_hotel_ids_from_s3():
-    """Get list of hotel IDs by scanning S3 bucket structure"""
+@router.get("/utilities/{hotel_id}/bills")
+async def get_raw_bills_data(hotel_id: str, year: str = None):
+    """Get raw bill data with full DocuPipe JSON for advanced filtering - ENHANCED VERSION"""
     try:
-        response = s3.list_objects_v2(
-            Bucket=S3_BUCKET_NAME,
-            Delimiter='/'
+        # Get all years if not specified
+        current_year = datetime.now().year
+        years_to_check = [year] if year else [str(current_year), str(current_year - 1)]
+        
+        all_bills = []
+        
+        for check_year in years_to_check:
+            bills = get_utility_data_for_hotel_year(hotel_id, check_year)
+            
+            for bill in bills:
+                try:
+                    # Ensure bill has proper structure
+                    if not isinstance(bill, dict):
+                        continue
+                    
+                    # Get metadata
+                    summary = bill.get('summary', {})
+                    raw_data = bill.get('raw_data', bill)
+                    
+                    # Determine utility type if missing
+                    utility_type = bill.get('utility_type')
+                    if not utility_type:
+                        if 'supplier' in raw_data and 'arden' in raw_data.get('supplier', '').lower():
+                            utility_type = 'electricity'
+                        elif 'supplierInfo' in raw_data or 'documentType' in raw_data:
+                            utility_type = 'gas'
+                        else:
+                            utility_type = 'unknown'
+                    
+                    # Extract bill date for filtering
+                    bill_date = (
+                        summary.get('bill_date') or
+                        raw_data.get('billingPeriod', {}).get('endDate') or
+                        raw_data.get('billSummary', {}).get('billingPeriodEndDate') or
+                        ''
+                    )
+                    
+                    # Add enhanced metadata
+                    enhanced_bill = {
+                        **bill,
+                        'utility_type': utility_type,
+                        'enhanced_summary': {
+                            **summary,
+                            'bill_date': bill_date,
+                            'month_year': bill_date[:7] if bill_date else '',
+                            'year': bill_date[:4] if bill_date else ''
+                        }
+                    }
+                    
+                    all_bills.append(enhanced_bill)
+                    
+                except Exception as e:
+                    print(f"Error processing bill: {e}")
+                    continue
+        
+        # Sort by bill date (newest first)
+        all_bills.sort(
+            key=lambda x: x.get('enhanced_summary', {}).get('bill_date', ''), 
+            reverse=True
         )
         
-        hotel_ids = []
-        if 'CommonPrefixes' in response:
-            for prefix in response['CommonPrefixes']:
-                # Extract hotel ID from prefix (e.g., "hiex/" -> "hiex")
-                hotel_id = prefix['Prefix'].rstrip('/')
-                hotel_ids.append(hotel_id)
+        return {
+            "hotel_id": hotel_id,
+            "year": year or "all",
+            "bills": all_bills,
+            "total_bills": len(all_bills),
+            "bills_by_type": {
+                "electricity": len([b for b in all_bills if b.get('utility_type') == 'electricity']),
+                "gas": len([b for b in all_bills if b.get('utility_type') == 'gas']),
+                "water": len([b for b in all_bills if b.get('utility_type') == 'water']),
+                "unknown": len([b for b in all_bills if b.get('utility_type') == 'unknown'])
+            }
+        }
         
-        return hotel_ids
     except Exception as e:
-        print(f"Error getting hotel IDs from S3: {e}")
-        return []
-
+        print(f"Error fetching raw bills: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch bills: {str(e)}")
 
 @router.get("/utilities/missing-bills")
 async def get_missing_bills():
-    """Get missing and overdue utility bills dashboard"""
+    """Get missing and overdue utility bills dashboard - ENHANCED VERSION"""
     try:
-        # This is a simple implementation - you can enhance based on your needs
-        # You might want to track expected bills in a database or config
-        
         current_date = datetime.now()
         missing_bills = []
         
-        # Define expected utility types per hotel (you can move this to config)
-        # Using your hotel IDs from hotels.ts
+        # Hotel utilities mapping (customize based on your hotels)
         hotel_utilities = {
             "hiex": ["electricity", "gas"],
             "moxy": ["electricity", "gas"], 
@@ -523,26 +892,47 @@ async def get_missing_bills():
             "hiltonth": ["electricity", "gas"]
         }
         
-        # Check last 3 months for missing bills
-        for months_back in range(1, 4):
+        # Check last 6 months for missing bills
+        for months_back in range(1, 7):
             check_date = current_date - timedelta(days=30 * months_back)
             year_month = check_date.strftime("%Y-%m")
             
             for hotel_id, utilities in hotel_utilities.items():
                 for utility_type in utilities:
-                    # Check if bill exists for this hotel/utility/month
                     try:
+                        # Get bills for this hotel and year
                         bills = get_utility_data_for_hotel_year(hotel_id, str(check_date.year))
                         
-                        # Check if bill exists for this month
-                        bill_exists = any(
-                            bill.get("summary", {}).get("bill_date", "").startswith(year_month)
-                            for bill in bills 
-                            if bill.get("utility_type") == utility_type
-                        )
+                        # Check if bill exists for this specific month
+                        bill_exists = False
+                        for bill in bills:
+                            bill_date = ''
+                            summary = bill.get('summary', {})
+                            raw_data = bill.get('raw_data', bill)
+                            
+                            # Extract bill date
+                            bill_date = (
+                                summary.get('bill_date') or
+                                raw_data.get('billingPeriod', {}).get('endDate') or
+                                raw_data.get('billSummary', {}).get('billingPeriodEndDate') or
+                                ''
+                            )
+                            
+                            # Check utility type
+                            bill_utility_type = bill.get('utility_type')
+                            if not bill_utility_type:
+                                if 'supplier' in raw_data and 'arden' in raw_data.get('supplier', '').lower():
+                                    bill_utility_type = 'electricity'
+                                elif 'supplierInfo' in raw_data:
+                                    bill_utility_type = 'gas'
+                            
+                            if (bill_date.startswith(year_month) and 
+                                bill_utility_type == utility_type):
+                                bill_exists = True
+                                break
                         
                         if not bill_exists:
-                            # Calculate days overdue (assuming bills due by 15th of following month)
+                            # Calculate days overdue (bills typically due 15th of following month)
                             expected_due = datetime(check_date.year, check_date.month, 15)
                             if check_date.month == 12:
                                 expected_due = datetime(check_date.year + 1, 1, 15)
@@ -557,40 +947,53 @@ async def get_missing_bills():
                                     "utility_type": utility_type,
                                     "expected_month": calendar.month_name[check_date.month],
                                     "expected_year": check_date.year,
+                                    "expected_period": year_month,
                                     "days_overdue": days_overdue,
-                                    "last_uploaded": None,  # You could enhance this
-                                    "status": "missing" if days_overdue > 30 else "overdue",
+                                    "status": "missing" if days_overdue > 45 else "overdue",
                                     "expected_date": expected_due.isoformat(),
-                                    "manager_email": f"manager@{hotel_id}.com"  # You can customize this
+                                    "urgency": "high" if days_overdue > 60 else "medium" if days_overdue > 30 else "low"
                                 })
                     except Exception as e:
                         print(f"Error checking {hotel_id} {utility_type} for {year_month}: {e}")
                         continue
         
-        # Calculate stats
-        total_expected = len(hotel_utilities) * 2 * 3  # Rough estimate
+        # Calculate enhanced stats
+        total_hotels = len(hotel_utilities)
+        total_expected_per_month = sum(len(utilities) for utilities in hotel_utilities.values())
         total_missing = len([b for b in missing_bills if b["status"] == "missing"])
         total_overdue = len([b for b in missing_bills if b["status"] == "overdue"])
-        compliance_rate = max(0, (total_expected - len(missing_bills)) / total_expected * 100) if total_expected > 0 else 100
         hotels_with_issues = len(set(b["hotel_id"] for b in missing_bills))
+        
+        # Calculate compliance rate (rough estimate)
+        total_expected = total_expected_per_month * 6  # 6 months
+        compliance_rate = max(0, (total_expected - len(missing_bills)) / total_expected * 100) if total_expected > 0 else 100
         
         stats = {
             "total_expected": total_expected,
             "total_missing": total_missing,
             "total_overdue": total_overdue,
-            "compliance_rate": compliance_rate,
-            "hotels_with_issues": hotels_with_issues
+            "compliance_rate": round(compliance_rate, 1),
+            "hotels_with_issues": hotels_with_issues,
+            "total_hotels": total_hotels,
+            "urgency_breakdown": {
+                "high": len([b for b in missing_bills if b.get("urgency") == "high"]),
+                "medium": len([b for b in missing_bills if b.get("urgency") == "medium"]),
+                "low": len([b for b in missing_bills if b.get("urgency") == "low"])
+            }
         }
+        
+        # Sort missing bills by urgency and days overdue
+        missing_bills.sort(key=lambda x: (x.get("urgency") == "high", x.get("days_overdue", 0)), reverse=True)
         
         return {
             "missing_bills": missing_bills,
-            "stats": stats
+            "stats": stats,
+            "last_updated": current_date.isoformat()
         }
         
     except Exception as e:
         print(f"Error getting missing bills: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get missing bills: {str(e)}")
-
 
 @router.post("/utilities/send-reminder")
 async def send_reminder_email(reminder_data: dict):
@@ -604,7 +1007,7 @@ async def send_reminder_email(reminder_data: dict):
         # For now, just return success
         print(f"Sending reminder: {hotel_id} - {utility_type} - {month}")
         
-        # You can integrate with your existing email system here
+        # Integration point with your email system
         # email_service.send_reminder_email(hotel_id, utility_type, month)
         
         return {"success": True, "message": "Reminder email sent"}
@@ -613,31 +1016,20 @@ async def send_reminder_email(reminder_data: dict):
         print(f"Error sending reminder: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to send reminder: {str(e)}")
 
-
 @router.get("/utilities/all-bills")
 async def get_all_bills():
     """Get all uploaded utility bills for admin viewer"""
     try:
         all_bills = []
         
-        # You'll need to implement this based on your S3 structure
-        # This is a simplified version - you might want to cache this data
-        
         # Get hotel IDs dynamically from S3 bucket structure
         hotel_ids = get_hotel_ids_from_s3()
         current_year = datetime.now().year
         
         if not hotel_ids:
-            # Fallback if S3 scan fails
             return {
-                "missing_bills": [],
-                "stats": {
-                    "total_expected": 0,
-                    "total_missing": 0,
-                    "total_overdue": 0,
-                    "compliance_rate": 100,
-                    "hotels_with_issues": 0
-                }
+                "bills": [],
+                "total_bills": 0
             }
         
         for hotel_id in hotel_ids:
@@ -647,21 +1039,20 @@ async def get_all_bills():
                     bills = get_utility_data_for_hotel_year(hotel_id, str(year))
                     
                     for bill in bills:
-                        summary = bill.get("summary", {})
+                        summary = bill.get('summary', {})
                         
                         all_bills.append({
                             "id": f"{hotel_id}_{bill.get('utility_type')}_{summary.get('bill_date', '')}",
                             "hotel_id": hotel_id,
-                            "utility_type": bill.get("utility_type"),
-                            "filename": bill.get("filename", "Unknown"),
-                            "upload_date": bill.get("upload_date", ""),
-                            "bill_period": summary.get("bill_date", ""),
-                            "supplier": summary.get("supplier", "Unknown"),
-                            "total_amount": summary.get("total_cost", 0) or 0,
-                            "consumption": summary.get("total_kwh", 0) or summary.get("consumption_kwh", 0) or 0,
+                            "utility_type": bill.get('utility_type'),
+                            "filename": bill.get('filename', 'Unknown'),
+                            "upload_date": bill.get('uploaded_at', ''),
+                            "bill_period": summary.get('bill_date', ''),
+                            "supplier": summary.get('supplier', 'Unknown'),
+                            "total_amount": summary.get('total_cost', 0) or 0,
+                            "consumption": summary.get('total_kwh', 0) or summary.get('consumption_kwh', 0) or 0,
                             "consumption_unit": "kWh",
-                            "pdf_url": bill.get("pdf_url"),
-                            "parsed_status": "success"  # Since these are successfully parsed bills
+                            "parsed_status": "success"
                         })
                         
             except Exception as e:
@@ -671,12 +1062,11 @@ async def get_all_bills():
         # Sort by upload date (newest first)
         all_bills.sort(key=lambda x: x.get("upload_date", ""), reverse=True)
         
-        return {"bills": all_bills}
+        return {"bills": all_bills, "total_bills": len(all_bills)}
         
     except Exception as e:
         print(f"Error getting all bills: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get all bills: {str(e)}")
-
 
 @router.get("/utilities/bill-details/{bill_id}")
 async def get_bill_details(bill_id: str):
@@ -708,7 +1098,7 @@ async def get_bill_details(bill_id: str):
         
         return {
             "bill_id": bill_id,
-            "parsed_data": target_bill.get("raw_data", target_bill),  # Return full parsed data
+            "parsed_data": target_bill.get("raw_data", target_bill),
             "summary": target_bill.get("summary", {})
         }
         
@@ -717,38 +1107,6 @@ async def get_bill_details(bill_id: str):
     except Exception as e:
         print(f"Error getting bill details: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get bill details: {str(e)}")
-
-
-@router.get("/utilities/download-pdf/{bill_id}")
-async def download_bill_pdf(bill_id: str):
-    """Download PDF file for a specific bill"""
-    try:
-        # This would need to be implemented based on your S3 PDF storage structure
-        # For now, return a redirect or signed URL
-        
-        parts = bill_id.split("_")
-        if len(parts) < 3:
-            raise HTTPException(status_code=400, detail="Invalid bill ID format")
-        
-        hotel_id = parts[0]
-        utility_type = parts[1] 
-        bill_date = "_".join(parts[2:])
-        
-        # You would generate a signed S3 URL here
-        # pdf_url = generate_s3_signed_url(hotel_id, utility_type, bill_date)
-        
-        # For now, return info about where the PDF would be
-        return {
-            "message": "PDF download would be implemented here",
-            "hotel_id": hotel_id,
-            "utility_type": utility_type,
-            "bill_date": bill_date
-        }
-        
-    except Exception as e:
-        print(f"Error downloading PDF: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to download PDF: {str(e)}")
-
 
 @router.get("/utilities/comparison/{year}")
 async def get_utilities_comparison(year: int, hotel_ids: str = "hiex,moxy,hida,hbhdcc,hbhe,sera,marina"):
@@ -767,61 +1125,6 @@ async def get_utilities_comparison(year: int, hotel_ids: str = "hiex,moxy,hida,h
         print(f"Error fetching comparison data: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch comparison data: {str(e)}")
 
-# Add these new endpoints to your existing utilities router
-
-@router.get("/utilities/{hotel_id}/bills")
-async def get_raw_bills_data(hotel_id: str, year: str = None):
-    """Get raw bill data with full DocuPipe JSON for advanced filtering"""
-    try:
-        # Get all years if not specified
-        years_to_check = [year] if year else [str(datetime.now().year), str(datetime.now().year - 1)]
-        
-        all_bills = []
-        
-        for check_year in years_to_check:
-            prefix = f"utilities/{hotel_id}/{check_year}/"
-            
-            response = s3.list_objects_v2(
-                Bucket=S3_BUCKET_NAME,
-                Prefix=prefix
-            )
-            
-            if 'Contents' in response:
-                for obj in response['Contents']:
-                    try:
-                        file_response = s3.get_object(
-                            Bucket=S3_BUCKET_NAME,
-                            Key=obj['Key']
-                        )
-                        
-                        bill_data = json.loads(file_response['Body'].read())
-                        
-                        # Add S3 metadata
-                        bill_data['s3_key'] = obj['Key']
-                        bill_data['last_modified'] = obj['LastModified'].isoformat()
-                        bill_data['file_size'] = obj['Size']
-                        
-                        all_bills.append(bill_data)
-                        
-                    except Exception as e:
-                        print(f"Error reading {obj['Key']}: {e}")
-                        continue
-        
-        # Sort by bill date
-        all_bills.sort(key=lambda x: x.get('summary', {}).get('bill_date') or '', reverse=True)
-        
-        return {
-            "hotel_id": hotel_id,
-            "year": year or "all",
-            "bills": all_bills,
-            "total_bills": len(all_bills)
-        }
-        
-    except Exception as e:
-        print(f"Error fetching raw bills: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch bills: {str(e)}")
-
-
 @router.get("/utilities/{hotel_id}/analytics")
 async def get_utility_analytics(
     hotel_id: str, 
@@ -838,7 +1141,7 @@ async def get_utility_analytics(
         
         # Apply filters
         if month:
-            bills = [b for b in bills if b.get('summary', {}).get('bill_date', '').startswith(f"{year or datetime.now().year}-{month.zfill(2)}")]
+            bills = [b for b in bills if b.get('enhanced_summary', {}).get('bill_date', '').startswith(f"{year or datetime.now().year}-{month.zfill(2)}")]
         
         if utility_type:
             bills = [b for b in bills if b.get('utility_type') == utility_type]
@@ -862,7 +1165,7 @@ async def get_utility_analytics(
                             mic_total += amount
                             
                             mic_details.append({
-                                'bill_date': bill.get('summary', {}).get('bill_date'),
+                                'bill_date': bill.get('enhanced_summary', {}).get('bill_date'),
                                 'description': charge.get('description'),
                                 'amount': amount,
                                 'quantity': charge.get('quantity', {}),
@@ -873,7 +1176,7 @@ async def get_utility_analytics(
             analytics['mic_charges'] = {
                 'total': round(mic_total, 2),
                 'details': mic_details,
-                'average_monthly': round(mic_total / max(len(set(b.get('summary', {}).get('bill_date', '')[:7] for b in bills)), 1), 2)
+                'average_monthly': round(mic_total / max(len(set(b.get('enhanced_summary', {}).get('bill_date', '')[:7] for b in bills)), 1), 2)
             }
         
         if metric == "overview" or metric == "carbon_tax":
@@ -893,7 +1196,7 @@ async def get_utility_analytics(
                             carbon_total += amount
                             
                             carbon_details.append({
-                                'bill_date': bill.get('summary', {}).get('bill_date'),
+                                'bill_date': bill.get('enhanced_summary', {}).get('bill_date'),
                                 'description': item.get('description'),
                                 'amount': amount,
                                 'units': item.get('units'),
@@ -904,83 +1207,7 @@ async def get_utility_analytics(
             analytics['carbon_tax'] = {
                 'total': round(carbon_total, 2),
                 'details': carbon_details,
-                'average_monthly': round(carbon_total / max(len(set(b.get('summary', {}).get('bill_date', '')[:7] for b in bills)), 1), 2)
-            }
-        
-        if metric == "overview" or metric == "standing_charges":
-            # Calculate standing charges
-            standing_total = 0
-            standing_details = []
-            
-            for bill in bills:
-                raw_data = bill.get('raw_data', {})
-                
-                if bill.get('utility_type') == 'electricity':
-                    charges = raw_data.get('charges', [])
-                    for charge in charges:
-                        desc = charge.get('description', '').lower()
-                        if 'standing' in desc:
-                            amount = charge.get('amount', 0)
-                            standing_total += amount
-                            standing_details.append({
-                                'bill_date': bill.get('summary', {}).get('bill_date'),
-                                'description': charge.get('description'),
-                                'amount': amount,
-                                'utility_type': 'electricity'
-                            })
-                
-                elif bill.get('utility_type') == 'gas':
-                    line_items = raw_data.get('lineItems', [])
-                    for item in line_items:
-                        desc = item.get('description', '').lower()
-                        if 'standing' in desc:
-                            amount = item.get('amount', 0)
-                            standing_total += amount
-                            standing_details.append({
-                                'bill_date': bill.get('summary', {}).get('bill_date'),
-                                'description': item.get('description'),
-                                'amount': amount,
-                                'utility_type': 'gas'
-                            })
-            
-            analytics['standing_charges'] = {
-                'total': round(standing_total, 2),
-                'details': standing_details
-            }
-        
-        if metric == "overview" or metric == "day_night_split":
-            # Day/night consumption analysis
-            day_total = 0
-            night_total = 0
-            monthly_breakdown = {}
-            
-            for bill in bills:
-                if bill.get('utility_type') == 'electricity':
-                    raw_data = bill.get('raw_data', {})
-                    consumption = raw_data.get('consumption', [])
-                    bill_month = bill.get('summary', {}).get('bill_date', '')[:7]
-                    
-                    day_kwh = 0
-                    night_kwh = 0
-                    
-                    for cons in consumption:
-                        if cons.get('type') == 'Day':
-                            day_kwh = cons.get('units', {}).get('value', 0)
-                            day_total += day_kwh
-                        elif cons.get('type') == 'Night':
-                            night_kwh = cons.get('units', {}).get('value', 0)
-                            night_total += night_kwh
-                    
-                    if bill_month not in monthly_breakdown:
-                        monthly_breakdown[bill_month] = {'day': 0, 'night': 0}
-                    
-                    monthly_breakdown[bill_month]['day'] += day_kwh
-                    monthly_breakdown[bill_month]['night'] += night_kwh
-            
-            analytics['day_night_split'] = {
-                'totals': {'day': round(day_total), 'night': round(night_total)},
-                'day_percentage': round(day_total / (day_total + night_total) * 100, 1) if (day_total + night_total) > 0 else 0,
-                'monthly_breakdown': monthly_breakdown
+                'average_monthly': round(carbon_total / max(len(set(b.get('enhanced_summary', {}).get('bill_date', '')[:7] for b in bills)), 1), 2)
             }
         
         return {
@@ -999,21 +1226,16 @@ async def get_utility_analytics(
         print(f"Error generating analytics: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to generate analytics: {str(e)}")
 
-
 @router.get("/utilities/{hotel_id}/export")
 async def export_utility_data(
     hotel_id: str,
-    format: str = "csv",  # csv or json
+    format: str = "csv",
     year: str = None,
     utility_type: str = None,
     include_raw: bool = False
 ):
     """Export utility data as CSV or JSON"""
     try:
-        from io import StringIO
-        import csv
-        from fastapi.responses import StreamingResponse
-        
         # Get raw bills data
         bills_response = await get_raw_bills_data(hotel_id, year)
         bills = bills_response["bills"]
@@ -1026,39 +1248,17 @@ async def export_utility_data(
             # Create CSV
             output = StringIO()
             
-            if include_raw:
-                # Full raw data export
-                fieldnames = [
-                    'hotel_id', 'utility_type', 'filename', 'bill_date', 'supplier',
-                    'total_cost', 'total_kwh', 'day_kwh', 'night_kwh', 'consumption_kwh',
-                    'account_number', 'meter_number', 'billing_period_start', 'billing_period_end',
-                    'invoice_number', 'upload_date', 's3_key'
-                ]
-                
-                # Add charge/line item details
-                max_charges = max(len(b.get('raw_data', {}).get('charges', [])) for b in bills) if bills else 0
-                max_line_items = max(len(b.get('raw_data', {}).get('lineItems', [])) for b in bills) if bills else 0
-                
-                for i in range(max_charges):
-                    fieldnames.extend([f'charge_{i+1}_desc', f'charge_{i+1}_amount', f'charge_{i+1}_rate'])
-                
-                for i in range(max_line_items):
-                    fieldnames.extend([f'line_item_{i+1}_desc', f'line_item_{i+1}_amount', f'line_item_{i+1}_rate'])
-                
-            else:
-                # Summary export
-                fieldnames = [
-                    'hotel_id', 'utility_type', 'filename', 'bill_date', 'supplier',
-                    'total_cost', 'total_kwh', 'day_kwh', 'night_kwh', 'consumption_kwh',
-                    'account_number', 'meter_number', 'upload_date'
-                ]
+            fieldnames = [
+                'hotel_id', 'utility_type', 'filename', 'bill_date', 'supplier',
+                'total_cost', 'total_kwh', 'day_kwh', 'night_kwh', 'consumption_kwh',
+                'account_number', 'meter_number', 'upload_date'
+            ]
             
             writer = csv.DictWriter(output, fieldnames=fieldnames)
             writer.writeheader()
             
             for bill in bills:
                 summary = bill.get('summary', {})
-                raw_data = bill.get('raw_data', {})
                 
                 row = {
                     'hotel_id': bill.get('hotel_id'),
@@ -1075,28 +1275,6 @@ async def export_utility_data(
                     'meter_number': summary.get('meter_number'),
                     'upload_date': bill.get('uploaded_at')
                 }
-                
-                if include_raw:
-                    row.update({
-                        'billing_period_start': summary.get('billing_period_start'),
-                        'billing_period_end': summary.get('billing_period_end'),
-                        'invoice_number': raw_data.get('billSummary', {}).get('invoiceNumber') or raw_data.get('billingRef'),
-                        's3_key': bill.get('s3_key')
-                    })
-                    
-                    # Add charges
-                    charges = raw_data.get('charges', [])
-                    for i, charge in enumerate(charges):
-                        row[f'charge_{i+1}_desc'] = charge.get('description')
-                        row[f'charge_{i+1}_amount'] = charge.get('amount')
-                        row[f'charge_{i+1}_rate'] = charge.get('rate', {}).get('value') if isinstance(charge.get('rate'), dict) else charge.get('rate')
-                    
-                    # Add line items
-                    line_items = raw_data.get('lineItems', [])
-                    for i, item in enumerate(line_items):
-                        row[f'line_item_{i+1}_desc'] = item.get('description')
-                        row[f'line_item_{i+1}_amount'] = item.get('amount')
-                        row[f'line_item_{i+1}_rate'] = item.get('rate')
                 
                 writer.writerow(row)
             
@@ -1129,123 +1307,3 @@ async def export_utility_data(
                         "summary": bill.get('summary'),
                         "uploaded_at": bill.get('uploaded_at')
                     }
-                    for bill in bills
-                ]
-            }
-            
-            filename = f"{hotel_id}_utilities_{year or 'all'}_{utility_type or 'all'}.json"
-            
-            return StreamingResponse(
-                iter([json.dumps(export_data, indent=2, ensure_ascii=False)]),
-                media_type="application/json",
-                headers={"Content-Disposition": f"attachment; filename={filename}"}
-            )
-        
-    except Exception as e:
-        print(f"Error exporting data: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to export data: {str(e)}")
-
-
-@router.get("/utilities/{hotel_id}/bill/{bill_id}")
-async def get_single_bill_details(hotel_id: str, bill_id: str):
-    """Get detailed information for a specific bill"""
-    try:
-        # bill_id format: {utility_type}_{filename_without_extension}_{timestamp}
-        
-        # Get raw bills and find the specific one
-        bills_response = await get_raw_bills_data(hotel_id)
-        bills = bills_response["bills"]
-        
-        target_bill = None
-        for bill in bills:
-            # Match by S3 key or filename
-            if bill_id in bill.get('s3_key', '') or bill_id in bill.get('filename', ''):
-                target_bill = bill
-                break
-        
-        if not target_bill:
-            raise HTTPException(status_code=404, detail="Bill not found")
-        
-        # Enhance with detailed analysis
-        raw_data = target_bill.get('raw_data', {})
-        
-        # Extract all charges/line items with analysis
-        cost_breakdown = []
-        
-        if target_bill.get('utility_type') == 'electricity':
-            charges = raw_data.get('charges', [])
-            for charge in charges:
-                cost_breakdown.append({
-                    'type': 'charge',
-                    'description': charge.get('description'),
-                    'amount': charge.get('amount'),
-                    'quantity': charge.get('quantity', {}),
-                    'rate': charge.get('rate', {}),
-                    'category': categorize_electricity_charge(charge.get('description', ''))
-                })
-        
-        elif target_bill.get('utility_type') == 'gas':
-            line_items = raw_data.get('lineItems', [])
-            for item in line_items:
-                cost_breakdown.append({
-                    'type': 'line_item',
-                    'description': item.get('description'),
-                    'amount': item.get('amount'),
-                    'units': item.get('units'),
-                    'rate': item.get('rate'),
-                    'category': categorize_gas_charge(item.get('description', ''))
-                })
-        
-        return {
-            "bill_details": target_bill,
-            "cost_breakdown": cost_breakdown,
-            "analysis": {
-                "total_charges": len(cost_breakdown),
-                "cost_categories": list(set(item['category'] for item in cost_breakdown)),
-                "largest_charge": max(cost_breakdown, key=lambda x: x.get('amount', 0)) if cost_breakdown else None
-            }
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error getting bill details: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get bill details: {str(e)}")
-
-
-def categorize_electricity_charge(description: str) -> str:
-    """Categorize electricity charges for analysis"""
-    desc_lower = description.lower()
-    
-    if 'standing' in desc_lower:
-        return 'standing_charges'
-    elif 'day' in desc_lower and 'units' in desc_lower:
-        return 'day_consumption'
-    elif 'night' in desc_lower and 'units' in desc_lower:
-        return 'night_consumption'
-    elif 'mic' in desc_lower or 'capacity' in desc_lower:
-        return 'capacity_charges'
-    elif 'demand' in desc_lower:
-        return 'demand_charges'
-    elif 'pso' in desc_lower:
-        return 'levies'
-    elif 'tax' in desc_lower:
-        return 'taxes'
-    else:
-        return 'other'
-
-
-def categorize_gas_charge(description: str) -> str:
-    """Categorize gas charges for analysis"""
-    desc_lower = description.lower()
-    
-    if 'commodity' in desc_lower or 'tariff' in desc_lower:
-        return 'commodity'
-    elif 'carbon' in desc_lower:
-        return 'carbon_tax'
-    elif 'standing' in desc_lower:
-        return 'standing_charges'
-    elif 'capacity' in desc_lower:
-        return 'capacity_charges'
-    else:
-        return 'other'
