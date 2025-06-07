@@ -1024,14 +1024,13 @@ async def debug_test_single_bill(hotel_id: str, year: str = "2025"):
             analysis["extraction_test"] = {
                 "consumption_kwh": raw_data.get('consumptionDetails', {}).get('consumptionValue', 0),
                 "total_cost": raw_data.get('billSummary', {}).get('currentBillAmount', 0),
-                "bill_date": raw  
-                
-        elif first_bill.get('utility_type') == 'gas':
-            analysis["extraction_test"] = {
-                "consumption_kwh": raw_data.get('consumptionDetails', {}).get('consumptionValue', 0),
-                "total_cost": raw_data.get('billSummary', {}).get('currentBillAmount', 0),
                 "bill_date": raw_data.get('billSummary', {}).get('billingPeriodEndDate', '')
             }
+        
+        return analysis
+        
+    except Exception as e:
+        return {"error": str(e)}
         
         return analysis
         
