@@ -570,8 +570,43 @@ def get_utility_data_for_hotel_year(hotel_id: str, year: str):
     except Exception as e:
         print(f"Error in get_utility_data_for_hotel_year: {e}")
         return []
-# Add this endpoint to your utilities router
 
+@router.get("/utilities/bill-pdf/{hotel_id}/{utility_type}/{year}/{filename}")
+async def get_bill_pdf_direct(hotel_id: str, utility_type: str, year: str, filename: str):
+    """Download PDF for a specific bill using direct S3 path"""
+    try:
+        # Construct S3 key directly from path parameters
+        s3_key = f"{hotel_id}/{utility_type}/{year}/{filename}"
+        
+        print(f"Looking for PDF at S3 key: {s3_key}")
+        
+        try:
+            # Get PDF from S3
+            pdf_response = s3_client.get_object(
+                Bucket=S3_BUCKET_NAME,
+                Key=s3_key
+            )
+            
+            pdf_content = pdf_response['Body'].read()
+            
+            # Return PDF with proper headers
+            return Response(
+                content=pdf_content,
+                media_type="application/pdf",
+                headers={
+                    "Content-Disposition": f"attachment; filename={filename}",
+                    "Content-Length": str(len(pdf_content))
+                }
+            )
+            
+        except s3_client.exceptions.NoSuchKey:
+            raise HTTPException(status_code=404, detail=f"PDF file not found at {s3_key}")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting bill PDF: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get bill PDF: {str(e)}")
 @router.get("/utilities/bill-pdf/{bill_id}")
 async def get_bill_pdf(bill_id: str):
     """Download PDF for a specific bill"""
