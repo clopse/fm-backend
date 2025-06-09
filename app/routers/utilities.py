@@ -8,10 +8,12 @@ import pdfplumber
 import calendar
 import json
 import boto3
+import hashlib
 from io import BytesIO, StringIO
 import csv
 from fastapi.responses import StreamingResponse, Response
 from app.utils.s3 import save_pdf_to_s3
+from typing import List, Dict, Optional, Tuple
 
 router = APIRouter()
 
@@ -23,6 +25,166 @@ S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "jmk-project-uploads")
 
 # Initialize S3 client
 s3_client = boto3.client('s3')
+
+# ============= DUPLICATE DETECTION FUNCTIONS =============
+
+def create_bill_fingerprint(bill_data: dict) -> str:
+    """Create unique fingerprint for duplicate detection"""
+    try:
+        summary = bill_data.get('summary', {})
+        raw_data = bill_data.get('raw_data', {})
+        
+        # Get key fields for comparison
+        meter_number = (
+            summary.get('meter_number', '') or 
+            raw_data.get('meterDetails', {}).get('meterNumber', '') or
+            raw_data.get('accountInfo', {}).get('meterNumber', '')
+        ).strip().lower()
+        
+        bill_date = (
+            summary.get('bill_date', '') or
+            raw_data.get('billingPeriod', {}).get('endDate', '') or
+            raw_data.get('billSummary', {}).get('billingPeriodEndDate', '')
+        )
+        
+        billing_start = (
+            summary.get('billing_period_start', '') or
+            raw_data.get('billingPeriod', {}).get('startDate', '') or
+            raw_data.get('billSummary', {}).get('billingPeriodStartDate', '')
+        )
+        
+        total_cost = (
+            summary.get('total_cost', 0) or
+            raw_data.get('totalAmount', {}).get('value', 0) or
+            raw_data.get('billSummary', {}).get('currentBillAmount', 0)
+        )
+        
+        # Create fingerprint string
+        fingerprint_parts = [
+            bill_data.get('hotel_id', ''),
+            bill_data.get('utility_type', ''),
+            meter_number,
+            bill_date,
+            billing_start,
+            str(round(float(total_cost) * 100))  # Convert to cents
+        ]
+        
+        fingerprint_string = '|'.join(filter(None, fingerprint_parts))
+        return hashlib.sha256(fingerprint_string.encode()).hexdigest()
+        
+    except Exception as e:
+        print(f"Error creating fingerprint: {e}")
+        return ""
+
+def check_for_duplicates(hotel_id: str, new_bill_data: dict) -> Tuple[bool, List[Dict], str]:
+    """Check if bill is duplicate by comparing with existing bills"""
+    try:
+        new_fingerprint = create_bill_fingerprint(new_bill_data)
+        if not new_fingerprint:
+            return False, [], "low"
+        
+        # Get existing bills for comparison
+        bill_date = (
+            new_bill_data.get('summary', {}).get('bill_date', '') or
+            new_bill_data.get('raw_data', {}).get('billingPeriod', {}).get('endDate', '') or
+            new_bill_data.get('raw_data', {}).get('billSummary', {}).get('billingPeriodEndDate', '')
+        )
+        
+        year = bill_date[:4] if bill_date else str(datetime.now().year)
+        existing_bills = get_utility_data_for_hotel_year(hotel_id, year)
+        
+        # Also check previous year for cross-year bills
+        prev_year = str(int(year) - 1)
+        existing_bills.extend(get_utility_data_for_hotel_year(hotel_id, prev_year))
+        
+        duplicates = []
+        confidence = "low"
+        
+        for existing_bill in existing_bills:
+            existing_fingerprint = create_bill_fingerprint(existing_bill)
+            
+            # Exact match
+            if existing_fingerprint == new_fingerprint and existing_fingerprint:
+                duplicates.append({
+                    'filename': existing_bill.get('filename', ''),
+                    'bill_date': existing_bill.get('summary', {}).get('bill_date', ''),
+                    'uploaded_at': existing_bill.get('uploaded_at', ''),
+                    'confidence': 'exact',
+                    's3_key': existing_bill.get('s3_key', '')
+                })
+                confidence = "exact"
+                continue
+            
+            # High confidence match - same meter, similar period, similar cost
+            if is_high_confidence_duplicate(new_bill_data, existing_bill):
+                duplicates.append({
+                    'filename': existing_bill.get('filename', ''),
+                    'bill_date': existing_bill.get('summary', {}).get('bill_date', ''),
+                    'uploaded_at': existing_bill.get('uploaded_at', ''),
+                    'confidence': 'high',
+                    's3_key': existing_bill.get('s3_key', '')
+                })
+                if confidence != "exact":
+                    confidence = "high"
+        
+        is_duplicate = len(duplicates) > 0
+        return is_duplicate, duplicates, confidence
+        
+    except Exception as e:
+        print(f"Error checking for duplicates: {e}")
+        return False, [], "low"
+
+def is_high_confidence_duplicate(bill1: dict, bill2: dict) -> bool:
+    """Check if two bills are likely duplicates with high confidence"""
+    try:
+        # Must be same utility type
+        if bill1.get('utility_type') != bill2.get('utility_type'):
+            return False
+        
+        # Extract comparison data for bill1
+        summary1 = bill1.get('summary', {})
+        raw1 = bill1.get('raw_data', {})
+        
+        meter1 = (summary1.get('meter_number', '') or 
+                 raw1.get('meterDetails', {}).get('meterNumber', '') or
+                 raw1.get('accountInfo', {}).get('meterNumber', '')).strip().lower()
+        
+        date1 = (summary1.get('bill_date', '') or
+                raw1.get('billingPeriod', {}).get('endDate', '') or
+                raw1.get('billSummary', {}).get('billingPeriodEndDate', ''))
+        
+        cost1 = (summary1.get('total_cost', 0) or
+                raw1.get('totalAmount', {}).get('value', 0) or
+                raw1.get('billSummary', {}).get('currentBillAmount', 0))
+        
+        # Extract comparison data for bill2
+        summary2 = bill2.get('summary', {})
+        raw2 = bill2.get('raw_data', {})
+        
+        meter2 = (summary2.get('meter_number', '') or 
+                 raw2.get('meterDetails', {}).get('meterNumber', '') or
+                 raw2.get('accountInfo', {}).get('meterNumber', '')).strip().lower()
+        
+        date2 = (summary2.get('bill_date', '') or
+                raw2.get('billingPeriod', {}).get('endDate', '') or
+                raw2.get('billSummary', {}).get('billingPeriodEndDate', ''))
+        
+        cost2 = (summary2.get('total_cost', 0) or
+                raw2.get('totalAmount', {}).get('value', 0) or
+                raw2.get('billSummary', {}).get('currentBillAmount', 0))
+        
+        # Check conditions for high confidence duplicate
+        same_meter = meter1 and meter2 and meter1 == meter2
+        same_date = date1 and date2 and date1 == date2
+        similar_cost = abs(float(cost1) - float(cost2)) <= 5.0  # Within €5
+        
+        return same_meter and same_date and similar_cost
+        
+    except Exception as e:
+        print(f"Error in high confidence check: {e}")
+        return False
+
+# ============= EXISTING FUNCTIONS WITH DUPLICATE DETECTION =============
 
 @router.post("/precheck")
 async def precheck_bill_type(file: UploadFile = File(...)):
@@ -116,7 +278,8 @@ async def parse_and_save(
     file: UploadFile = File(...),
     bill_date: str = Form(...),
     bill_type: str = Form(...),
-    supplier: str = Form(default="docupanda")
+    supplier: str = Form(default="docupanda"),
+    force_upload: bool = Form(default=False)
 ):
     if not DOCUPIPE_API_KEY:
         raise HTTPException(status_code=500, detail="DocuPipe API key not configured")
@@ -133,16 +296,40 @@ async def parse_and_save(
     if not filename or not filename.lower().endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
     
+    # Quick duplicate pre-check (optional)
+    if not force_upload:
+        try:
+            temp_bill_data = {
+                'hotel_id': hotel_id,
+                'utility_type': bill_type,
+                'filename': filename,
+                'summary': {'bill_date': bill_date},
+                'raw_data': {}
+            }
+            
+            is_duplicate, duplicates, confidence = check_for_duplicates(hotel_id, temp_bill_data)
+            
+            if is_duplicate and confidence == 'exact':
+                return {
+                    "status": "duplicate_detected",
+                    "message": f"Exact duplicate detected",
+                    "duplicates": duplicates,
+                    "allow_force": True,
+                    "original_filename": filename
+                }
+        except Exception as e:
+            print(f"Pre-check duplicate detection failed: {e}")
+    
     background_tasks.add_task(
         process_and_store_docupipe, 
-        content, hotel_id, filename, bill_date, bill_type, supplier
+        content, hotel_id, filename, bill_date, bill_type, supplier, force_upload
     )
     
     return {"status": "processing", "message": "Upload received. Processing in background."}
 
-def process_and_store_docupipe(content, hotel_id, filename, bill_date, bill_type, supplier="docupanda"):
+def process_and_store_docupipe(content, hotel_id, filename, bill_date, bill_type, supplier="docupanda", force_upload=False):
     try:
-        print(f"Processing {filename} - Type: {bill_type}, Hotel: {hotel_id}")
+        print(f"Processing {filename} - Type: {bill_type}, Hotel: {hotel_id}, Force: {force_upload}")
         
         detected_supplier = "Unknown"
         detected_bill_type = bill_type
@@ -343,13 +530,51 @@ def process_and_store_docupipe(content, hotel_id, filename, bill_date, bill_type
                         bill_date
                     )
                     
+                    # CREATE COMPLETE BILL DATA FOR DUPLICATE CHECK
+                    complete_bill_data = {
+                        "hotel_id": hotel_id,
+                        "utility_type": bill_type,
+                        "filename": filename,
+                        "uploaded_at": datetime.utcnow().isoformat(),
+                        "summary": extract_bill_summary_from_real_data(parsed, bill_type),
+                        "raw_data": parsed
+                    }
+                    
+                    # DUPLICATE CHECK WITH COMPLETE DATA
+                    if not force_upload:
+                        is_duplicate, duplicates, confidence = check_for_duplicates(hotel_id, complete_bill_data)
+                        
+                        if is_duplicate:
+                            print(f"DUPLICATE DETECTED: {confidence} confidence, {len(duplicates)} existing bills")
+                            for dup in duplicates:
+                                print(f"  - {dup['filename']} ({dup['confidence']})")
+                            
+                            # Block exact duplicates
+                            if confidence == "exact":
+                                error_msg = f"Exact duplicate blocked: {duplicates[0]['filename']}"
+                                print(error_msg)
+                                send_upload_webhook(hotel_id, bill_type, filename, bill_date, "", detected_supplier, "duplicate_blocked", error_msg)
+                                return
+                            
+                            # Add duplicate warning for high confidence
+                            complete_bill_data["duplicate_warning"] = {
+                                "confidence": confidence,
+                                "similar_bills": duplicates,
+                                "detected_at": datetime.utcnow().isoformat(),
+                                "saved_anyway": True
+                            }
+                    
                     try:
-                        s3_json_path = save_parsed_data_to_s3(hotel_id, bill_type, parsed, "", filename)
+                        s3_json_path = save_parsed_data_to_s3(hotel_id, bill_type, parsed, "", filename, complete_bill_data)
                         save_pdf_to_s3(content, hotel_id, bill_type, billing_start, filename)
                         
                         print(f"Successfully saved: {s3_json_path}")
                         
-                        send_upload_webhook(hotel_id, bill_type, filename, billing_start, s3_json_path, detected_supplier, "success")
+                        webhook_status = "success"
+                        if complete_bill_data.get("duplicate_warning"):
+                            webhook_status = "success_with_duplicate_warning"
+                        
+                        send_upload_webhook(hotel_id, bill_type, filename, billing_start, s3_json_path, detected_supplier, webhook_status)
                         return
                         
                     except Exception as e:
@@ -382,21 +607,23 @@ def process_and_store_docupipe(content, hotel_id, filename, bill_date, bill_type
         import traceback
         traceback.print_exc()
 
-def save_parsed_data_to_s3(hotel_id: str, bill_type: str, parsed_data: dict, upload_date: str, filename: str):
-    """Save parsed utility bill data to S3 with proper structure"""
+def save_parsed_data_to_s3(hotel_id: str, bill_type: str, parsed_data: dict, upload_date: str, filename: str, complete_bill_data: dict = None):
+    """Save parsed utility bill data to S3 with duplicate detection info"""
     try:
-        summary = extract_bill_summary_from_real_data(parsed_data, bill_type)
+        if complete_bill_data:
+            bill_data = complete_bill_data
+        else:
+            summary = extract_bill_summary_from_real_data(parsed_data, bill_type)
+            bill_data = {
+                "hotel_id": hotel_id,
+                "utility_type": bill_type,
+                "filename": filename,
+                "uploaded_at": upload_date or datetime.utcnow().isoformat(),
+                "summary": summary,
+                "raw_data": parsed_data
+            }
         
-        bill_data = {
-            "hotel_id": hotel_id,
-            "utility_type": bill_type,
-            "filename": filename,
-            "uploaded_at": upload_date or datetime.utcnow().isoformat(),
-            "summary": summary,
-            "raw_data": parsed_data
-        }
-        
-        bill_date = summary.get('bill_date', '')
+        bill_date = bill_data.get('summary', {}).get('bill_date', '')
         if bill_date:
             year = bill_date.split('-')[0]
             month = bill_date.split('-')[1] if len(bill_date.split('-')) > 1 else '01'
@@ -408,6 +635,9 @@ def save_parsed_data_to_s3(hotel_id: str, bill_type: str, parsed_data: dict, upl
         timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
         base_filename = filename.replace('.pdf', '').replace('.json', '')
         s3_key = f"utilities/{hotel_id}/{year}/{month}/{bill_type}_{base_filename}_{timestamp}.json"
+        
+        # Add S3 key to bill data for future reference
+        bill_data['s3_key'] = s3_key
         
         s3_client.put_object(
             Bucket=S3_BUCKET_NAME,
@@ -429,27 +659,6 @@ def extract_bill_summary_from_real_data(data: dict, bill_type: str) -> dict:
     
     try:
         if bill_type == 'electricity':
-            summary.update({
-                'supplier': data.get('supplier', 'Unknown'),
-                'customer_ref': data.get('customerRef', ''),
-                'billing_ref': data.get('billingRef', ''),
-                'account_number': data.get('customerRef', ''),
-                'meter_number': data.get('meterDetails', {}).get('meterNumber', ''),
-                'mprn': data.get('meterDetails', {}).get('mprn', ''),
-                'bill_date': data.get('billingPeriod', {}).get('endDate', ''),
-                'billing_period_start': data.get('billingPeriod', {}).get('startDate', ''),
-                'billing_period_end': data.get('billingPeriod', {}).get('endDate', ''),
-                'total_cost': data.get('totalAmount', {}).get('value', 0),
-                'mic_value': data.get('meterDetails', {}).get('mic', {}).get('value', 0),
-                'max_demand': data.get('meterDetails', {}).get('maxDemand', {}).get('value', 0),
-                'vat_amount': data.get('taxDetails', {}).get('vatAmount', 0),
-                'electricity_tax': data.get('taxDetails', {}).get('electricityTax', {}).get('amount', 0)
-            })
-            
-            consumption = data.get('consumption', [])
-            day_kwh = next((c.get('units', {}).get('value', 0) for c in consumption if c.get('type') == 'Day'), 0)
-            night_kwh = next((c.get('units', {}).get('value', 0) for c in consumption if c.get('type') == 'Night'), 0)
-            
             summary.update({
                 'day_kwh': day_kwh,
                 'night_kwh': night_kwh,
@@ -549,6 +758,9 @@ def get_utility_data_for_hotel_year(hotel_id: str, year: str):
                                 print(f"Skipping bill with unknown utility type: {key}")
                                 continue
                         
+                        # Add S3 key for reference
+                        bill_data['s3_key'] = key
+                        
                         print(f"✅ Adding bill: {key} for date {bill_date}, type: {bill_data.get('utility_type')}")
                         bills.append(bill_data)
                         
@@ -571,17 +783,251 @@ def get_utility_data_for_hotel_year(hotel_id: str, year: str):
         print(f"Error in get_utility_data_for_hotel_year: {e}")
         return []
 
+# ============= DUPLICATE MANAGEMENT ENDPOINTS =============
+
+@router.get("/{hotel_id}/duplicates/stats")
+async def get_duplicate_stats(hotel_id: str):
+    """Get duplicate detection statistics"""
+    try:
+        current_year = datetime.now().year
+        years = [str(current_year), str(current_year - 1)]
+        
+        stats = {"electricity": 0, "gas": 0, "total_duplicates": 0}
+        
+        for year in years:
+            bills = get_utility_data_for_hotel_year(hotel_id, year)
+            
+            for bill in bills:
+                if bill.get("duplicate_warning"):
+                    utility_type = bill.get("utility_type", "unknown")
+                    if utility_type in stats:
+                        stats[utility_type] += 1
+                    stats["total_duplicates"] += 1
+        
+        return {"stats": [
+            {"utility_type": "electricity", "duplicates": stats["electricity"]},
+            {"utility_type": "gas", "duplicates": stats["gas"]},
+            {"utility_type": "total", "duplicates": stats["total_duplicates"]}
+        ]}
+        
+    except Exception as e:
+        print(f"Error getting duplicate stats: {e}")
+        return {"stats": []}
+
+@router.get("/{hotel_id}/duplicates/list")
+async def list_duplicate_bills(hotel_id: str, year: str = None):
+    """List all bills flagged as potential duplicates"""
+    try:
+        current_year = datetime.now().year
+        years_to_check = [year] if year else [str(current_year), str(current_year - 1)]
+        
+        duplicate_bills = []
+        
+        for check_year in years_to_check:
+            bills = get_utility_data_for_hotel_year(hotel_id, check_year)
+            
+            for bill in bills:
+                if bill.get("duplicate_warning"):
+                    duplicate_info = {
+                        "filename": bill.get("filename", ""),
+                        "utility_type": bill.get("utility_type", ""),
+                        "bill_date": bill.get("summary", {}).get("bill_date", ""),
+                        "uploaded_at": bill.get("uploaded_at", ""),
+                        "s3_key": bill.get("s3_key", ""),
+                        "duplicate_warning": bill.get("duplicate_warning", {}),
+                        "total_cost": bill.get("summary", {}).get("total_cost", 0)
+                    }
+                    duplicate_bills.append(duplicate_info)
+        
+        # Sort by upload date, newest first
+        duplicate_bills.sort(key=lambda x: x.get("uploaded_at", ""), reverse=True)
+        
+        return {
+            "hotel_id": hotel_id,
+            "duplicate_bills": duplicate_bills,
+            "total_count": len(duplicate_bills)
+        }
+        
+    except Exception as e:
+        print(f"Error listing duplicate bills: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to list duplicates: {str(e)}")
+
+@router.delete("/{hotel_id}/duplicates/remove")
+async def remove_duplicate_bill(hotel_id: str, s3_key: str):
+    """Remove a specific duplicate bill"""
+    try:
+        # Verify the bill exists and is marked as duplicate
+        try:
+            file_response = s3_client.get_object(
+                Bucket=S3_BUCKET_NAME,
+                Key=s3_key
+            )
+            
+            bill_data = json.loads(file_response['Body'].read())
+            
+            if not bill_data.get("duplicate_warning"):
+                raise HTTPException(status_code=400, detail="Bill is not marked as duplicate")
+            
+            if bill_data.get("hotel_id") != hotel_id:
+                raise HTTPException(status_code=403, detail="Access denied")
+                
+        except s3_client.exceptions.NoSuchKey:
+            raise HTTPException(status_code=404, detail="Bill not found")
+        
+        # Delete the JSON file
+        s3_client.delete_object(
+            Bucket=S3_BUCKET_NAME,
+            Key=s3_key
+        )
+        
+        # Try to delete corresponding PDF (optional)
+        try:
+            pdf_filename = bill_data.get("filename", "")
+            if pdf_filename:
+                bill_date = bill_data.get("summary", {}).get("billing_period_start", "")
+                year = bill_date[:4] if bill_date else str(datetime.now().year)
+                utility_type = bill_data.get("utility_type", "")
+                
+                pdf_key = f"{hotel_id}/{utility_type}/{year}/{pdf_filename}"
+                s3_client.delete_object(
+                    Bucket=S3_BUCKET_NAME,
+                    Key=pdf_key
+                )
+                print(f"Also deleted PDF: {pdf_key}")
+        except Exception as e:
+            print(f"Could not delete PDF: {e}")
+        
+        return {
+            "success": True,
+            "message": f"Duplicate bill removed: {bill_data.get('filename', 'unknown')}"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error removing duplicate bill: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to remove duplicate: {str(e)}")
+
+@router.post("/{hotel_id}/duplicates/clean")
+async def clean_all_duplicates(hotel_id: str, background_tasks: BackgroundTasks, keep_newest: bool = True):
+    """Clean all duplicate bills for a hotel (keep newest or oldest)"""
+    try:
+        background_tasks.add_task(perform_duplicate_cleanup, hotel_id, keep_newest)
+        
+        return {
+            "success": True,
+            "message": f"Duplicate cleanup started for {hotel_id}. {'Keeping newest' if keep_newest else 'Keeping oldest'} bills.",
+            "status": "processing"
+        }
+        
+    except Exception as e:
+        print(f"Error starting duplicate cleanup: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to start cleanup: {str(e)}")
+
+def perform_duplicate_cleanup(hotel_id: str, keep_newest: bool = True):
+    """Background task to clean up duplicate bills"""
+    try:
+        print(f"Starting duplicate cleanup for {hotel_id}")
+        
+        current_year = datetime.now().year
+        years = [str(current_year), str(current_year - 1), str(current_year - 2)]
+        
+        all_bills = []
+        for year in years:
+            bills = get_utility_data_for_hotel_year(hotel_id, year)
+            all_bills.extend(bills)
+        
+        # Group bills by fingerprint
+        fingerprint_groups = {}
+        for bill in all_bills:
+            fingerprint = create_bill_fingerprint(bill)
+            if fingerprint:
+                if fingerprint not in fingerprint_groups:
+                    fingerprint_groups[fingerprint] = []
+                fingerprint_groups[fingerprint].append(bill)
+        
+        deleted_count = 0
+        
+        # Process each group
+        for fingerprint, bills in fingerprint_groups.items():
+            if len(bills) > 1:
+                print(f"Found {len(bills)} bills with same fingerprint")
+                
+                # Sort by upload date
+                bills.sort(key=lambda x: x.get("uploaded_at", ""), reverse=keep_newest)
+                
+                # Keep the first one (newest or oldest based on sort), delete the rest
+                bills_to_delete = bills[1:]
+                
+                for bill_to_delete in bills_to_delete:
+                    try:
+                        s3_key = bill_to_delete.get("s3_key")
+                        if s3_key:
+                            s3_client.delete_object(
+                                Bucket=S3_BUCKET_NAME,
+                                Key=s3_key
+                            )
+                            print(f"Deleted duplicate: {bill_to_delete.get('filename', 'unknown')}")
+                            deleted_count += 1
+                            
+                            # Try to delete corresponding PDF
+                            try:
+                                pdf_filename = bill_to_delete.get("filename", "")
+                                if pdf_filename:
+                                    bill_date = bill_to_delete.get("summary", {}).get("billing_period_start", "")
+                                    year = bill_date[:4] if bill_date else str(datetime.now().year)
+                                    utility_type = bill_to_delete.get("utility_type", "")
+                                    
+                                    pdf_key = f"{hotel_id}/{utility_type}/{year}/{pdf_filename}"
+                                    s3_client.delete_object(
+                                        Bucket=S3_BUCKET_NAME,
+                                        Key=pdf_key
+                                    )
+                                    print(f"Also deleted PDF: {pdf_key}")
+                            except Exception as e:
+                                print(f"Could not delete PDF for {pdf_filename}: {e}")
+                                
+                    except Exception as e:
+                        print(f"Error deleting bill {bill_to_delete.get('filename', 'unknown')}: {e}")
+        
+        print(f"Duplicate cleanup completed for {hotel_id}. Deleted {deleted_count} duplicate bills.")
+        
+        # Send webhook notification
+        send_upload_webhook(
+            hotel_id, 
+            "cleanup", 
+            f"duplicate_cleanup_{datetime.now().strftime('%Y%m%d_%H%M%S')}", 
+            "", 
+            "", 
+            "System", 
+            "cleanup_completed", 
+            f"Deleted {deleted_count} duplicate bills"
+        )
+        
+    except Exception as e:
+        print(f"Error in duplicate cleanup: {e}")
+        send_upload_webhook(
+            hotel_id, 
+            "cleanup", 
+            "duplicate_cleanup_failed", 
+            "", 
+            "", 
+            "System", 
+            "cleanup_error", 
+            str(e)
+        )
+
+# ============= EXISTING ENDPOINTS (UNCHANGED) =============
+
 @router.get("/bill-pdf/{hotel_id}/{utility_type}/{year}/{filename}")
 async def get_bill_pdf_direct(hotel_id: str, utility_type: str, year: str, filename: str):
     """Download PDF for a specific bill using direct S3 path"""
     try:
-        # Construct S3 key directly from path parameters
         s3_key = f"{hotel_id}/{utility_type}/{year}/{filename}"
         
         print(f"Looking for PDF at S3 key: {s3_key}")
         
         try:
-            # Get PDF from S3
             pdf_response = s3_client.get_object(
                 Bucket=S3_BUCKET_NAME,
                 Key=s3_key
@@ -589,7 +1035,6 @@ async def get_bill_pdf_direct(hotel_id: str, utility_type: str, year: str, filen
             
             pdf_content = pdf_response['Body'].read()
             
-            # Return PDF with proper headers
             return Response(
                 content=pdf_content,
                 media_type="application/pdf",
@@ -612,20 +1057,17 @@ async def get_bill_pdf_direct(hotel_id: str, utility_type: str, year: str, filen
 async def get_bill_pdf(bill_id: str):
     """Download PDF for a specific bill"""
     try:
-        # Parse bill_id to extract hotel_id, utility_type, and date
         parts = bill_id.split("_")
         if len(parts) < 3:
             raise HTTPException(status_code=400, detail="Invalid bill ID format")
         
         hotel_id = parts[0]
         utility_type = parts[1]
-        bill_date = "_".join(parts[2:])  # In case date has underscores
+        bill_date = "_".join(parts[2:])
         
-        # Get the specific bill data from S3 JSON to find PDF location
         year = bill_date[:4] if len(bill_date) >= 4 else str(datetime.now().year)
         bills = get_utility_data_for_hotel_year(hotel_id, year)
         
-        # Find the specific bill
         target_bill = None
         for bill in bills:
             if (bill.get("utility_type") == utility_type and 
@@ -636,23 +1078,18 @@ async def get_bill_pdf(bill_id: str):
         if not target_bill:
             raise HTTPException(status_code=404, detail="Bill not found")
         
-        # Get the original filename to construct PDF path
         original_filename = target_bill.get("filename", "")
         if not original_filename:
             raise HTTPException(status_code=404, detail="Original filename not found")
         
-        # Construct PDF S3 key based on your storage pattern
-        # PDFs are stored at: {hotel_id}/electricity/{year}/filename.pdf
         billing_start = target_bill.get("summary", {}).get("billing_period_start", "")
         billing_year = billing_start[:4] if billing_start else year
         
-        # Your PDF storage pattern
         pdf_key = f"{hotel_id}/{utility_type}/{billing_year}/{original_filename}"
         
         print(f"Looking for PDF at S3 key: {pdf_key}")
         
         try:
-            # Get PDF from S3
             pdf_response = s3_client.get_object(
                 Bucket=S3_BUCKET_NAME,
                 Key=pdf_key
@@ -660,7 +1097,6 @@ async def get_bill_pdf(bill_id: str):
             
             pdf_content = pdf_response['Body'].read()
             
-            # Generate appropriate filename based on bill period
             summary = target_bill.get("summary", {})
             supplier = summary.get("supplier", "Unknown").replace(" ", "")
             
@@ -668,7 +1104,6 @@ async def get_bill_pdf(bill_id: str):
             end_date = summary.get("billing_period_end") or summary.get("bill_date")
             
             if start_date and end_date:
-                # Format dates for filename (e.g., GAS_Flogas_Dec24-Jan25.pdf)
                 start = datetime.strptime(start_date, '%Y-%m-%d')
                 end = datetime.strptime(end_date, '%Y-%m-%d')
                 
@@ -680,10 +1115,8 @@ async def get_bill_pdf(bill_id: str):
                 else:
                     filename = f"{utility_type.upper()}_{supplier}_{start_formatted}-{end_formatted}.pdf"
             else:
-                # Fallback filename
                 filename = f"{utility_type.upper()}_{supplier}_bill.pdf"
             
-            # Return PDF with proper headers
             return Response(
                 content=pdf_content,
                 media_type="application/pdf",
@@ -694,7 +1127,6 @@ async def get_bill_pdf(bill_id: str):
             )
             
         except s3_client.exceptions.NoSuchKey:
-            # Try alternative PDF locations if not found
             alternative_keys = [
                 f"{hotel_id}/{utility_type}/{year}/{original_filename}",
                 f"pdfs/{hotel_id}/{utility_type}/{year}/{original_filename}",
@@ -712,7 +1144,6 @@ async def get_bill_pdf(bill_id: str):
                     
                     pdf_content = pdf_response['Body'].read()
                     
-                    # Use same filename generation as above
                     summary = target_bill.get("summary", {})
                     supplier = summary.get("supplier", "Unknown").replace(" ", "")
                     start_date = summary.get("billing_period_start")
@@ -743,7 +1174,6 @@ async def get_bill_pdf(bill_id: str):
                 except s3_client.exceptions.NoSuchKey:
                     continue
             
-            # If no PDF found in any location
             raise HTTPException(status_code=404, detail=f"PDF file not found for bill {bill_id}")
         
     except HTTPException:
@@ -754,12 +1184,13 @@ async def get_bill_pdf(bill_id: str):
 
 @router.get("/{hotel_id}/bills")
 async def get_raw_bills_data(hotel_id: str, year: str = None):
-    """Get raw bill data with full DocuPipe JSON for advanced filtering"""
+    """Get raw bill data with duplicate detection info"""
     try:
         current_year = datetime.now().year
         years_to_check = [year] if year else [str(current_year), str(current_year - 1)]
         
         all_bills = []
+        duplicate_count = 0
         
         for check_year in years_to_check:
             bills = get_utility_data_for_hotel_year(hotel_id, check_year)
@@ -788,9 +1219,15 @@ async def get_raw_bills_data(hotel_id: str, year: str = None):
                         ''
                     )
                     
+                    # Check if this bill has duplicate warnings
+                    is_flagged_duplicate = bool(bill.get("duplicate_warning"))
+                    if is_flagged_duplicate:
+                        duplicate_count += 1
+                    
                     enhanced_bill = {
                         **bill,
                         'utility_type': utility_type,
+                        'is_flagged_duplicate': is_flagged_duplicate,
                         'enhanced_summary': {
                             **summary,
                             'bill_date': bill_date,
@@ -815,6 +1252,7 @@ async def get_raw_bills_data(hotel_id: str, year: str = None):
             "year": year or "all",
             "bills": all_bills,
             "total_bills": len(all_bills),
+            "duplicate_bills": duplicate_count,
             "bills_by_type": {
                 "electricity": len([b for b in all_bills if b.get('utility_type') == 'electricity']),
                 "gas": len([b for b in all_bills if b.get('utility_type') == 'gas']),
@@ -868,6 +1306,7 @@ async def get_utilities_data(hotel_id: str, year: int):
                 
                 month_key = bill_date[:7]
                 
+                # Skip duplicates at the monthly level (keep first one found)
                 if utility_type in months_seen and month_key in months_seen[utility_type]:
                     print(f"WARNING: Duplicate month detected at endpoint level: {utility_type} {month_key}")
                     continue
@@ -888,7 +1327,8 @@ async def get_utilities_data(hotel_id: str, year: int):
                         "total_kwh": total_kwh,
                         "total_eur": total_cost,
                         "per_room_kwh": total_kwh / 100,
-                        "bill_id": bill.get('filename', f'electricity_{month_key}')
+                        "bill_id": bill.get('filename', f'electricity_{month_key}'),
+                        "is_duplicate": bool(bill.get("duplicate_warning"))
                     })
                     processed_count["electricity"] += 1
                 
@@ -901,7 +1341,8 @@ async def get_utilities_data(hotel_id: str, year: int):
                         "total_kwh": consumption_kwh,
                         "total_eur": total_cost,
                         "per_room_kwh": consumption_kwh / 100,
-                        "bill_id": bill.get('filename', f'gas_{month_key}')
+                        "bill_id": bill.get('filename', f'gas_{month_key}'),
+                        "is_duplicate": bool(bill.get("duplicate_warning"))
                     })
                     processed_count["gas"] += 1
                 
@@ -1006,6 +1447,7 @@ async def debug_test_single_bill(hotel_id: str, year: str = "2025"):
                 "utility_type": first_bill.get('utility_type'),
                 "has_summary": 'summary' in first_bill,
                 "has_raw_data": 'raw_data' in first_bill,
+                "has_duplicate_warning": 'duplicate_warning' in first_bill,
                 "summary_keys": list(first_bill.get('summary', {}).keys()),
                 "raw_data_keys": list(first_bill.get('raw_data', {}).keys())
             }
@@ -1030,9 +1472,25 @@ async def debug_test_single_bill(hotel_id: str, year: str = "2025"):
         return analysis
         
     except Exception as e:
-        return {"error": str(e)}
-        
-        return analysis
-        
-    except Exception as e:
-        return {"error": str(e)}
+        return {"error": str(e)}({
+                'supplier': data.get('supplier', 'Unknown'),
+                'customer_ref': data.get('customerRef', ''),
+                'billing_ref': data.get('billingRef', ''),
+                'account_number': data.get('customerRef', ''),
+                'meter_number': data.get('meterDetails', {}).get('meterNumber', ''),
+                'mprn': data.get('meterDetails', {}).get('mprn', ''),
+                'bill_date': data.get('billingPeriod', {}).get('endDate', ''),
+                'billing_period_start': data.get('billingPeriod', {}).get('startDate', ''),
+                'billing_period_end': data.get('billingPeriod', {}).get('endDate', ''),
+                'total_cost': data.get('totalAmount', {}).get('value', 0),
+                'mic_value': data.get('meterDetails', {}).get('mic', {}).get('value', 0),
+                'max_demand': data.get('meterDetails', {}).get('maxDemand', {}).get('value', 0),
+                'vat_amount': data.get('taxDetails', {}).get('vatAmount', 0),
+                'electricity_tax': data.get('taxDetails', {}).get('electricityTax', {}).get('amount', 0)
+            })
+            
+            consumption = data.get('consumption', [])
+            day_kwh = next((c.get('units', {}).get('value', 0) for c in consumption if c.get('type') == 'Day'), 0)
+            night_kwh = next((c.get('units', {}).get('value', 0) for c in consumption if c.get('type') == 'Night'), 0)
+            
+            summary.update
