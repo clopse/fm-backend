@@ -659,6 +659,9 @@ def extract_bill_summary_from_real_data(data: dict, bill_type: str) -> dict:
     
     try:
         if bill_type == 'electricity':
+            consumption = data.get('consumption', [])
+            day_kwh = next((c.get('units', {}).get('value', 0) for c in consumption if c.get('type') == 'Day'), 0)
+            night_kwh = next((c.get('units', {}).get('value', 0) for c in consumption if c.get('type') == 'Night'), 0)
             summary.update({
                 'day_kwh': day_kwh,
                 'night_kwh': night_kwh,
