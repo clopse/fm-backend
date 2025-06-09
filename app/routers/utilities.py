@@ -662,10 +662,26 @@ def extract_bill_summary_from_real_data(data: dict, bill_type: str) -> dict:
             consumption = data.get('consumption', [])
             day_kwh = next((c.get('units', {}).get('value', 0) for c in consumption if c.get('type') == 'Day'), 0)
             night_kwh = next((c.get('units', {}).get('value', 0) for c in consumption if c.get('type') == 'Night'), 0)
+            
             summary.update({
                 'day_kwh': day_kwh,
                 'night_kwh': night_kwh,
-                'total_kwh': day_kwh + night_kwh
+                'total_kwh': day_kwh + night_kwh,
+                
+                'supplier': data.get('supplier', 'Unknown'),
+                'customer_ref': data.get('customerRef', ''),
+                'billing_ref': data.get('billingRef', ''),
+                'account_number': data.get('customerRef', ''),
+                'meter_number': data.get('meterDetails', {}).get('meterNumber', ''),
+                'mprn': data.get('meterDetails', {}).get('mprn', ''),
+                'bill_date': data.get('billingPeriod', {}).get('endDate', ''),
+                'billing_period_start': data.get('billingPeriod', {}).get('startDate', ''),
+                'billing_period_end': data.get('billingPeriod', {}).get('endDate', ''),
+                'total_cost': data.get('totalAmount', {}).get('value', 0),
+                'mic_value': data.get('meterDetails', {}).get('mic', {}).get('value', 0),
+                'max_demand': data.get('meterDetails', {}).get('maxDemand', {}).get('value', 0),
+                'vat_amount': data.get('taxDetails', {}).get('vatAmount', 0),
+                'electricity_tax': data.get('taxDetails', {}).get('electricityTax', {}).get('amount', 0)
             })
             
         elif bill_type == 'gas':
