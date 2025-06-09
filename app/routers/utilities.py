@@ -1471,8 +1471,8 @@ async def debug_test_single_bill(hotel_id: str, year: str = "2025"):
         
         return analysis
         
-    except Exception as e:
-        return {"error": str(e)}({
+    if bill_type == 'electricity':
+            summary.update({
                 'supplier': data.get('supplier', 'Unknown'),
                 'customer_ref': data.get('customerRef', ''),
                 'billing_ref': data.get('billingRef', ''),
@@ -1493,4 +1493,13 @@ async def debug_test_single_bill(hotel_id: str, year: str = "2025"):
             day_kwh = next((c.get('units', {}).get('value', 0) for c in consumption if c.get('type') == 'Day'), 0)
             night_kwh = next((c.get('units', {}).get('value', 0) for c in consumption if c.get('type') == 'Night'), 0)
             
-            summary.update
+            summary.update({
+                'day_kwh': day_kwh,
+                'night_kwh': night_kwh,
+                'total_kwh': day_kwh + night_kwh
+            })
+
+    except Exception as e:
+        print(f"Error extracting summary for {bill_type}: {e}")
+    
+    return summary
