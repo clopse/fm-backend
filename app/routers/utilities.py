@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, Form, BackgroundTasks, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, BackgroundTasks, HTTPException, Request
 from datetime import datetime, timedelta
 import base64
 import requests
@@ -1039,7 +1039,7 @@ def perform_duplicate_cleanup(hotel_id: str, keep_newest: bool = True):
 # ============= EXISTING ENDPOINTS (UNCHANGED) =============
 
 @router.get("/bill-pdf/{hotel_id}/{utility_type}/{year}/{filename}")
-async def get_bill_pdf_direct(hotel_id: str, utility_type: str, year: str, filename: str):
+async def get_bill_pdf_direct(hotel_id: str, utility_type: str, year: str, filename: str, request: Request):
     """Download PDF for a specific bill using direct S3 path"""
     try:
         s3_key = f"{hotel_id}/{utility_type}/{year}/{filename}"
@@ -1058,7 +1058,7 @@ async def get_bill_pdf_direct(hotel_id: str, utility_type: str, year: str, filen
                 content=pdf_content,
                 media_type="application/pdf",
                 headers={
-                    "Content-Disposition": f"attachment; filename={filename}",
+                    "Content-Disposition": f"{'inline' if request.query_params.get('disposition') == 'inline' else 'attachment'}; filename={filename}",
                     "Content-Length": str(len(pdf_content))
                 }
             )
@@ -1073,7 +1073,7 @@ async def get_bill_pdf_direct(hotel_id: str, utility_type: str, year: str, filen
         raise HTTPException(status_code=500, detail=f"Failed to get bill PDF: {str(e)}")
 
 @router.get("/bill-pdf/{bill_id}")
-async def get_bill_pdf(bill_id: str):
+async def get_bill_pdf(bill_id: str, request: Request):
     """Download PDF for a specific bill"""
     try:
         parts = bill_id.split("_")
@@ -1140,7 +1140,7 @@ async def get_bill_pdf(bill_id: str):
                 content=pdf_content,
                 media_type="application/pdf",
                 headers={
-                    "Content-Disposition": f"attachment; filename={filename}",
+                    "Content-Disposition": f"{'inline' if request.query_params.get('disposition') == 'inline' else 'attachment'}; filename={filename}",
                     "Content-Length": str(len(pdf_content))
                 }
             )
@@ -1185,7 +1185,7 @@ async def get_bill_pdf(bill_id: str):
                         content=pdf_content,
                         media_type="application/pdf",
                         headers={
-                            "Content-Disposition": f"attachment; filename={filename}",
+                            "Content-Disposition": f"{'inline' if request.query_params.get('disposition') == 'inline' else 'attachment'}; filename={filename}",
                             "Content-Length": str(len(pdf_content))
                         }
                     )
