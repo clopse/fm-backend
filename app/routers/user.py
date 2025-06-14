@@ -349,8 +349,8 @@ async def delete_user(user_id: str, current_user: User = Depends(get_current_use
     
     return {"message": "User deleted successfully"}
 
-# FIXED: Simple password reset endpoint
-@router.put("/{user_id}/reset-password")
+# FIXED: Simple password reset endpoint (changed back to POST to match frontend)
+@router.post("/{user_id}/reset-password")
 async def reset_password(
     user_id: str, 
     password_data: SimplePasswordReset,
