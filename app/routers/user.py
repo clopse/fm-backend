@@ -69,8 +69,8 @@ class PasswordReset(BaseModel):
         return v.lower().strip()
 
 # NEW: Simple password reset model for the reset endpoint
-class SimplePasswordReset(BaseModel):
-    password: str
+# class SimplePasswordReset(BaseModel):
+#     password: str
 
 class User(BaseModel):
     id: str
@@ -184,6 +184,26 @@ def get_current_user(email: str = Depends(verify_token)):
         detail="User not found"
     )
 
+def check_admin_access(current_user: User = Depends(get_current_user)):
+    """Check if current user has admin access"""
+    admin_roles = ["System Admin", "Administrator", "Admin"]
+    if current_user.role not in admin_roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required"
+        )
+    return current_user
+
+def check_manager_or_admin_access(current_user: User = Depends(get_current_user)):
+    """Check if current user has manager or admin access"""
+    allowed_roles = ["System Admin", "Administrator", "Admin", "Manager", "Hotel Manager", "Group General Manager"]
+    if current_user.role not in allowed_roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Manager or Admin access required"
+        )
+    return current_user
+
 # Authentication Routes
 @router.post("/auth/login", response_model=TokenResponse)
 async def login(user_login: UserLogin):
@@ -229,16 +249,16 @@ async def logout(current_user: User = Depends(get_current_user)):
     """User logout (client should delete token)"""
     return {"message": "Successfully logged out"}
 
-# User Management Routes
+# User Management Routes (Admin Only)
 @router.get("/", response_model=List[UserResponse])
 async def get_users(
     role: Optional[str] = None,
     hotel: Optional[str] = None,
     status: Optional[str] = None,
     search: Optional[str] = None,
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(check_admin_access)  # Admin only
 ):
-    """Get all users with optional filtering"""
+    """Get all users with optional filtering (Admin only)"""
     users = load_users()
     user_list = []
     
@@ -260,8 +280,8 @@ async def get_users(
     return user_list
 
 @router.get("/{user_id}", response_model=UserResponse)
-async def get_user(user_id: str, current_user: User = Depends(get_current_user)):
-    """Get a specific user"""
+async def get_user(user_id: str, current_user: User = Depends(check_manager_or_admin_access)):
+    """Get a specific user (Manager/Admin only)"""
     users = load_users()
     
     if user_id not in users:
@@ -270,8 +290,8 @@ async def get_user(user_id: str, current_user: User = Depends(get_current_user))
     return UserResponse(**users[user_id], id=user_id)
 
 @router.post("/", response_model=UserResponse)
-async def create_user(user_create: UserCreate, current_user: User = Depends(get_current_user)):
-    """Create a new user"""
+async def create_user(user_create: UserCreate, current_user: User = Depends(check_admin_access)):
+    """Create a new user (Admin only)"""
     users = load_users()
     
     # Check if email already exists (case-insensitive)
@@ -303,9 +323,9 @@ async def create_user(user_create: UserCreate, current_user: User = Depends(get_
 async def update_user(
     user_id: str, 
     user_update: UserUpdate, 
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(check_admin_access)  # Admin only
 ):
-    """Update a user"""
+    """Update a user (Admin only)"""
     users = load_users()
     
     if user_id not in users:
@@ -334,10 +354,10 @@ async def update_user(
     
     return UserResponse(**user_data, id=user_id)
 
-# FIXED: Actually delete the user permanently
+# FIXED: Actually delete the user permanently (Admin only)
 @router.delete("/{user_id}")
-async def delete_user(user_id: str, current_user: User = Depends(get_current_user)):
-    """Permanently delete a user"""
+async def delete_user(user_id: str, current_user: User = Depends(check_admin_access)):
+    """Permanently delete a user (Admin only)"""
     users = load_users()
     
     if user_id not in users:
@@ -349,30 +369,30 @@ async def delete_user(user_id: str, current_user: User = Depends(get_current_use
     
     return {"message": "User deleted successfully"}
 
-# FIXED: Simple password reset endpoint (changed back to POST to match frontend)
+# FIXED: Password reset endpoint (reverted to work with existing frontend) (Admin only)
 @router.post("/{user_id}/reset-password")
 async def reset_password(
     user_id: str, 
-    password_data: SimplePasswordReset,
-    current_user: User = Depends(get_current_user)
+    password_reset: PasswordReset,
+    current_user: User = Depends(check_admin_access)  # Admin only
 ):
-    """Reset user password"""
+    """Reset user password (Admin only)"""
     users = load_users()
     
     if user_id not in users:
         raise HTTPException(status_code=404, detail="User not found")
     
     # Hash new password
-    hashed_password = hash_password(password_data.password)
+    hashed_password = hash_password(password_reset.new_password)
     users[user_id]["password"] = hashed_password
     save_users(users)
     
     return {"message": "Password reset successfully"}
 
-# FIXED: Add deactivate endpoint for those who want to deactivate instead of delete
+# FIXED: Add deactivate endpoint for those who want to deactivate instead of delete (Admin only)
 @router.put("/{user_id}/deactivate")
-async def deactivate_user(user_id: str, current_user: User = Depends(get_current_user)):
-    """Deactivate a user"""
+async def deactivate_user(user_id: str, current_user: User = Depends(check_admin_access)):
+    """Deactivate a user (Admin only)"""
     users = load_users()
     
     if user_id not in users:
@@ -384,8 +404,8 @@ async def deactivate_user(user_id: str, current_user: User = Depends(get_current
     return {"message": "User deactivated successfully"}
 
 @router.post("/{user_id}/activate")
-async def activate_user(user_id: str, current_user: User = Depends(get_current_user)):
-    """Activate a user"""
+async def activate_user(user_id: str, current_user: User = Depends(check_admin_access)):
+    """Activate a user (Admin only)"""
     users = load_users()
     
     if user_id not in users:
@@ -397,8 +417,8 @@ async def activate_user(user_id: str, current_user: User = Depends(get_current_u
     return {"message": "User activated successfully"}
 
 @router.get("/stats/summary")
-async def get_user_stats(current_user: User = Depends(get_current_user)):
-    """Get user statistics"""
+async def get_user_stats(current_user: User = Depends(check_manager_or_admin_access)):
+    """Get user statistics (Manager/Admin only)"""
     users = load_users()
     
     total_users = len(users)
