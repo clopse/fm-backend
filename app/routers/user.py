@@ -68,6 +68,10 @@ class PasswordReset(BaseModel):
     def normalize_email(cls, v):
         return v.lower().strip()
 
+# NEW: Simple password reset model for the reset endpoint
+class SimplePasswordReset(BaseModel):
+    password: str
+
 class User(BaseModel):
     id: str
     name: str
@@ -330,24 +334,26 @@ async def update_user(
     
     return UserResponse(**user_data, id=user_id)
 
+# FIXED: Actually delete the user permanently
 @router.delete("/{user_id}")
 async def delete_user(user_id: str, current_user: User = Depends(get_current_user)):
-    """Delete/deactivate a user"""
+    """Permanently delete a user"""
     users = load_users()
     
     if user_id not in users:
         raise HTTPException(status_code=404, detail="User not found")
     
-    # Instead of deleting, set status to Inactive
-    users[user_id]["status"] = "Inactive"
+    # Actually delete the user from the dictionary
+    del users[user_id]
     save_users(users)
     
-    return {"message": "User deactivated successfully"}
+    return {"message": "User deleted successfully"}
 
-@router.post("/{user_id}/reset-password")
+# FIXED: Simple password reset endpoint
+@router.put("/{user_id}/reset-password")
 async def reset_password(
     user_id: str, 
-    password_reset: PasswordReset, 
+    password_data: SimplePasswordReset,
     current_user: User = Depends(get_current_user)
 ):
     """Reset user password"""
@@ -357,11 +363,25 @@ async def reset_password(
         raise HTTPException(status_code=404, detail="User not found")
     
     # Hash new password
-    hashed_password = hash_password(password_reset.new_password)
+    hashed_password = hash_password(password_data.password)
     users[user_id]["password"] = hashed_password
     save_users(users)
     
     return {"message": "Password reset successfully"}
+
+# FIXED: Add deactivate endpoint for those who want to deactivate instead of delete
+@router.put("/{user_id}/deactivate")
+async def deactivate_user(user_id: str, current_user: User = Depends(get_current_user)):
+    """Deactivate a user"""
+    users = load_users()
+    
+    if user_id not in users:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    users[user_id]["status"] = "Inactive"
+    save_users(users)
+    
+    return {"message": "User deactivated successfully"}
 
 @router.post("/{user_id}/activate")
 async def activate_user(user_id: str, current_user: User = Depends(get_current_user)):
