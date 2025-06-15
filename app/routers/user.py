@@ -1,451 +1,189 @@
-from fastapi import APIRouter, HTTPException, Request, Depends, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel, EmailStr, validator
-from typing import Optional, List
-import json
-import boto3
-import bcrypt
-from jose import jwt
-from datetime import datetime, timedelta
-import uuid
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import JSONResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from dotenv import load_dotenv
 import os
+import time
+from collections import defaultdict
 
-router = APIRouter()
-security = HTTPBearer()
+load_dotenv()
 
-# Configuration
-s3 = boto3.client(
-    's3',
-    aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
-    aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
-    region_name=os.getenv('AWS_REGION')
+# Rate limiter setup
+limiter = Limiter(key_func=get_remote_address)
+
+# Create FastAPI app with security configurations
+app = FastAPI(
+    title="JMK Hotels API",
+    description="Secure API for JMK Hotels Management System",
+    version="2.0.0",
+    # Hide docs in production
+    docs_url="/docs" if os.getenv("ENVIRONMENT") != "production" else None,
+    redoc_url="/redoc" if os.getenv("ENVIRONMENT") != "production" else None,
 )
-BUCKET_NAME = os.getenv("AWS_BUCKET_NAME")
-USERS_KEY = "data/users.json"
-SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-here-change-this")  # Use environment variable
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-# Pydantic Models
-class UserCreate(BaseModel):
-    name: str
-    email: EmailStr
-    role: str
-    hotel: str
-    password: str
+# Add rate limiting
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Security middleware
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
     
-    @validator('email')
-    def normalize_email(cls, v):
-        return v.lower().strip()
-
-class UserUpdate(BaseModel):
-    name: Optional[str] = None
-    email: Optional[EmailStr] = None
-    role: Optional[str] = None
-    hotel: Optional[str] = None
-    status: Optional[str] = None
+    # Add security headers
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
     
-    @validator('email')
-    def normalize_email(cls, v):
-        if v is not None:
-            return v.lower().strip()
-        return v
-
-class UserLogin(BaseModel):
-    email: EmailStr
-    password: str
+    # HSTS in production
+    if os.getenv("ENVIRONMENT") == "production":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     
-    @validator('email')
-    def normalize_email(cls, v):
-        return v.lower().strip()
-
-class PasswordReset(BaseModel):
-    email: EmailStr
-    new_password: str
-    reset_token: Optional[str] = None
+    # Remove server header
+    if "server" in response.headers:
+        del response.headers["server"]
     
-    @validator('email')
-    def normalize_email(cls, v):
-        return v.lower().strip()
+    return response
 
-# NEW: Simple password reset model for the reset endpoint
-# class SimplePasswordReset(BaseModel):
-#     password: str
-
-class User(BaseModel):
-    id: str
-    name: str
-    email: str
-    role: str
-    hotel: str
-    status: str = "Active"
-    created_at: str
-    last_login: Optional[str] = None
-
-class UserResponse(BaseModel):
-    id: str
-    name: str
-    email: str
-    role: str
-    hotel: str
-    status: str
-    created_at: str
-    last_login: Optional[str]
-
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str
-    user: UserResponse
-
-# Helper Functions
-def load_users() -> dict:
-    """Load users from S3"""
-    try:
-        obj = s3.get_object(Bucket=BUCKET_NAME, Key=USERS_KEY)
-        return json.loads(obj["Body"].read().decode("utf-8"))
-    except s3.exceptions.NoSuchKey:
-        return {}
-    except Exception:
-        return {}
-
-def save_users(users: dict):
-    """Save users to S3"""
-    try:
-        s3.put_object(
-            Bucket=BUCKET_NAME,
-            Key=USERS_KEY,
-            Body=json.dumps(users, indent=2),
-            ContentType="application/json"
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save users: {str(e)}")
-
-def find_user_by_email(users: dict, email: str) -> tuple:
-    """Find user by email (case-insensitive)"""
-    normalized_email = email.lower().strip()
-    for user_id, user_data in users.items():
-        if user_data["email"].lower().strip() == normalized_email:
-            return user_id, user_data
-    return None, None
-
-def hash_password(password: str) -> str:
-    """Hash password using bcrypt"""
-    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-
-def verify_password(password: str, hashed: str) -> bool:
-    """Verify password against hash"""
-    return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
-
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
-    """Create JWT access token"""
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
-
-def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    """Verify JWT token"""
-    try:
-        payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
-        email: str = payload.get("sub")
-        if email is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Could not validate credentials",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        return email
-    except jwt.PyJWTError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-def get_current_user(email: str = Depends(verify_token)):
-    """Get current user from token"""
-    users = load_users()
-    # First try exact match (for backward compatibility)
-    for user_id, user_data in users.items():
-        if user_data["email"] == email:
-            return User(**user_data, id=user_id)
+# Request logging middleware
+@app.middleware("http")
+async def logging_middleware(request: Request, call_next):
+    start_time = time.time()
     
-    # If exact match fails, try case-insensitive match
-    user_id, user_data = find_user_by_email(users, email)
-    if user_data:
-        return User(**user_data, id=user_id)
+    # Get client IP
+    client_ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "unknown")
     
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="User not found"
-    )
+    response = await call_next(request)
+    
+    process_time = time.time() - start_time
+    
+    # Log request (in production, send to proper logging service)
+    print(f"{client_ip} - {request.method} {request.url.path} - {response.status_code} - {process_time:.3f}s")
+    
+    return response
 
-def check_admin_access(current_user: User = Depends(get_current_user)):
-    """Check if current user has admin access"""
-    admin_roles = ["System Admin", "Administrator", "Admin"]
-    if current_user.role not in admin_roles:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access required"
-        )
-    return current_user
-
-def check_manager_or_admin_access(current_user: User = Depends(get_current_user)):
-    """Check if current user has manager or admin access"""
-    allowed_roles = ["System Admin", "Administrator", "Admin", "Manager", "Hotel Manager", "Group General Manager"]
-    if current_user.role not in allowed_roles:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Manager or Admin access required"
-        )
-    return current_user
-
-# Authentication Routes
-@router.post("/auth/login", response_model=TokenResponse)
-async def login(user_login: UserLogin):
-    """User login"""
-    users = load_users()
-    
-    # Find user by email (case-insensitive)
-    user_id, user_data = find_user_by_email(users, user_login.email)
-    
-    if not user_data or not verify_password(user_login.password, user_data["password"]):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password"
-        )
-    
-    if user_data["status"] == "Inactive":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Account is inactive"
-        )
-    
-    # Update last login
-    user_data["last_login"] = datetime.now().isoformat()
-    users[user_id] = user_data
-    save_users(users)
-    
-    # Create access token
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user_data["email"]}, expires_delta=access_token_expires
-    )
-    
-    user_response = UserResponse(**user_data, id=user_id)
-    
-    return TokenResponse(
-        access_token=access_token,
-        token_type="bearer",
-        user=user_response
-    )
-
-@router.post("/auth/logout")
-async def logout(current_user: User = Depends(get_current_user)):
-    """User logout (client should delete token)"""
-    return {"message": "Successfully logged out"}
-
-# User Management Routes (Admin Only)
-@router.get("/", response_model=List[UserResponse])
-async def get_users(
-    role: Optional[str] = None,
-    hotel: Optional[str] = None,
-    status: Optional[str] = None,
-    search: Optional[str] = None,
-    current_user: User = Depends(check_admin_access)  # Admin only
-):
-    """Get all users with optional filtering (Admin only)"""
-    users = load_users()
-    user_list = []
-    
-    for user_id, user_data in users.items():
-        user_response = UserResponse(**user_data, id=user_id)
+# HTTPS redirect middleware (for production)
+@app.middleware("http")
+async def https_redirect_middleware(request: Request, call_next):
+    if (os.getenv("ENVIRONMENT") == "production" and 
+        not request.url.scheme == "https" and 
+        not request.headers.get("X-Forwarded-Proto") == "https"):
         
-        # Apply filters
-        if role and user_data["role"] != role:
-            continue
-        if hotel and hotel != "All Hotels" and user_data["hotel"] != hotel:
-            continue
-        if status and user_data["status"] != status:
-            continue
-        if search and search.lower() not in user_data["name"].lower() and search.lower() not in user_data["email"].lower():
-            continue
-            
-        user_list.append(user_response)
+        # Redirect to HTTPS
+        https_url = request.url.replace(scheme="https")
+        return JSONResponse(
+            status_code=301,
+            headers={"Location": str(https_url)}
+        )
     
-    return user_list
+    return await call_next(request)
 
-@router.get("/{user_id}", response_model=UserResponse)
-async def get_user(user_id: str, current_user: User = Depends(check_manager_or_admin_access)):
-    """Get a specific user (Manager/Admin only)"""
-    users = load_users()
-    
-    if user_id not in users:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    return UserResponse(**users[user_id], id=user_id)
+# Trusted host middleware (configure for your domains)
+if os.getenv("ENVIRONMENT") == "production":
+    allowed_hosts = os.getenv("ALLOWED_HOSTS", "").split(",")
+    if allowed_hosts:
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
 
-@router.post("/", response_model=UserResponse)
-async def create_user(user_create: UserCreate, current_user: User = Depends(check_admin_access)):
-    """Create a new user (Admin only)"""
-    users = load_users()
-    
-    # Check if email already exists (case-insensitive)
-    existing_user_id, existing_user_data = find_user_by_email(users, user_create.email)
-    if existing_user_data:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    
-    # Create new user
-    user_id = str(uuid.uuid4())
-    hashed_password = hash_password(user_create.password)
-    
-    new_user = {
-        "name": user_create.name,
-        "email": user_create.email,  # Already normalized by validator
-        "role": user_create.role,
-        "hotel": user_create.hotel,
-        "password": hashed_password,
-        "status": "Active",
-        "created_at": datetime.now().isoformat(),
-        "last_login": None
-    }
-    
-    users[user_id] = new_user
-    save_users(users)
-    
-    return UserResponse(**new_user, id=user_id)
+# CORS configuration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://yourdomain.com",  # Replace with your production domain
+        "https://www.yourdomain.com",  # Replace with your production domain
+        "http://localhost:3000",  # Development
+        "http://127.0.0.1:3000",  # Development
+    ] if os.getenv("ENVIRONMENT") == "production" else ["*"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["*"],
+    max_age=86400,  # 24 hours
+)
 
-@router.put("/{user_id}", response_model=UserResponse)
-async def update_user(
-    user_id: str, 
-    user_update: UserUpdate, 
-    current_user: User = Depends(check_admin_access)  # Admin only
-):
-    """Update a user (Admin only)"""
-    users = load_users()
-    
-    if user_id not in users:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    user_data = users[user_id]
-    
-    # Update fields
-    if user_update.name is not None:
-        user_data["name"] = user_update.name
-    if user_update.email is not None:
-        # Check if new email already exists (case-insensitive)
-        existing_user_id, existing_user_data = find_user_by_email(users, user_update.email)
-        if existing_user_data and existing_user_id != user_id:
-            raise HTTPException(status_code=400, detail="Email already exists")
-        user_data["email"] = user_update.email  # Already normalized by validator
-    if user_update.role is not None:
-        user_data["role"] = user_update.role
-    if user_update.hotel is not None:
-        user_data["hotel"] = user_update.hotel
-    if user_update.status is not None:
-        user_data["status"] = user_update.status
-    
-    users[user_id] = user_data
-    save_users(users)
-    
-    return UserResponse(**user_data, id=user_id)
+# Health check endpoint with rate limiting
+@app.get("/health")
+@limiter.limit("10/minute")
+async def health_check(request: Request):
+    return {"status": "ok", "environment": os.getenv("ENVIRONMENT", "development")}
 
-# FIXED: Actually delete the user permanently (Admin only)
-@router.delete("/{user_id}")
-async def delete_user(user_id: str, current_user: User = Depends(check_admin_access)):
-    """Permanently delete a user (Admin only)"""
-    users = load_users()
-    
-    if user_id not in users:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    # Actually delete the user from the dictionary
-    del users[user_id]
-    save_users(users)
-    
-    return {"message": "User deleted successfully"}
+# Root endpoint
+@app.get("/")
+@limiter.limit("30/minute")
+async def root(request: Request):
+    return {"message": "JMK Hotels API v2.0 - Secure Edition 🔒"}
 
-# FIXED: Password reset endpoint (reverted to work with existing frontend) (Admin only)
-@router.post("/{user_id}/reset-password")
-async def reset_password(
-    user_id: str, 
-    password_reset: PasswordReset,
-    current_user: User = Depends(check_admin_access)  # Admin only
-):
-    """Reset user password (Admin only)"""
-    users = load_users()
-    
-    if user_id not in users:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    # Hash new password
-    hashed_password = hash_password(password_reset.new_password)
-    users[user_id]["password"] = hashed_password
-    save_users(users)
-    
-    return {"message": "Password reset successfully"}
+# Import and include routers
+from app.routers import (
+    user,  # Your updated secure user router
+    uploads,
+    utilities,
+    water,
+    drawings,
+    tenders,
+    compliance,
+    admin,
+    emails,
+    incidents,
+    inspections
+)
 
-# FIXED: Add deactivate endpoint for those who want to deactivate instead of delete (Admin only)
-@router.put("/{user_id}/deactivate")
-async def deactivate_user(user_id: str, current_user: User = Depends(check_admin_access)):
-    """Deactivate a user (Admin only)"""
-    users = load_users()
-    
-    if user_id not in users:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    users[user_id]["status"] = "Inactive"
-    save_users(users)
-    
-    return {"message": "User deactivated successfully"}
+# Include routers with rate limiting
+app.include_router(
+    user.router, 
+    prefix="/api/users", 
+    tags=["users"],
+    dependencies=[limiter.limit("100/minute")]  # Rate limit user endpoints
+)
 
-@router.post("/{user_id}/activate")
-async def activate_user(user_id: str, current_user: User = Depends(check_admin_access)):
-    """Activate a user (Admin only)"""
-    users = load_users()
-    
-    if user_id not in users:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    users[user_id]["status"] = "Active"
-    save_users(users)
-    
-    return {"message": "User activated successfully"}
+app.include_router(uploads.router, prefix="/api/uploads", tags=["uploads"])
+app.include_router(utilities.router, prefix="/api/utilities", tags=["utilities"])
+app.include_router(water.router, prefix="/api/water", tags=["water"])
+app.include_router(drawings.router, prefix="/api/drawings", tags=["drawings"])
+app.include_router(tenders.router, prefix="/api/tenders", tags=["tenders"])
+app.include_router(compliance.router, prefix="/api/compliance", tags=["compliance"])
+app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
+app.include_router(emails.router, prefix="/api/emails", tags=["emails"])
+app.include_router(incidents.router, prefix="/api/incidents", tags=["incidents"])
+app.include_router(inspections.router, prefix="/api/inspections", tags=["inspections"])
 
-@router.get("/stats/summary")
-async def get_user_stats(current_user: User = Depends(check_manager_or_admin_access)):
-    """Get user statistics (Manager/Admin only)"""
-    users = load_users()
-    
-    total_users = len(users)
-    active_users = sum(1 for user in users.values() if user["status"] == "Active")
-    inactive_users = total_users - active_users
-    
-    # Count by role
-    roles = {}
-    for user in users.values():
-        role = user["role"]
-        roles[role] = roles.get(role, 0) + 1
-    
-    # Count by hotel
-    hotels = {}
-    for user in users.values():
-        hotel = user["hotel"]
-        hotels[hotel] = hotels.get(hotel, 0) + 1
-    
-    return {
-        "total_users": total_users,
-        "active_users": active_users,
-        "inactive_users": inactive_users,
-        "roles": roles,
-        "hotels": hotels
-    }
+# Global exception handler
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail, "error_code": exc.status_code}
+    )
 
-@router.get("/me")
-async def get_me(current_user: User = Depends(get_current_user)):
-    """Get current user profile"""
-    return current_user
+# Generic exception handler
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception):
+    # In production, log the full error but don't expose it
+    if os.getenv("ENVIRONMENT") == "production":
+        print(f"Unhandled exception: {exc}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal server error", "error_code": 500}
+        )
+    else:
+        # In development, show the full error
+        return JSONResponse(
+            status_code=500,
+            content={"detail": str(exc), "error_code": 500}
+        )
+
+if __name__ == "__main__":
+    import uvicorn
+    
+    # Run with security considerations
+    uvicorn.run(
+        app,
+        host="0.0.0.0" if os.getenv("ENVIRONMENT") == "production" else "127.0.0.1",
+        port=int(os.getenv("PORT", 8000)),
+        reload=os.getenv("ENVIRONMENT") != "production",
+        access_log=False,  # Use custom logging middleware instead
+    )
