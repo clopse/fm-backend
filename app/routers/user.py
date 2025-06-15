@@ -1,491 +1,736 @@
-'use client';
+from fastapi import APIRouter, HTTPException, Request, Depends, status, BackgroundTasks
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel, EmailStr, validator
+from typing import Optional, List, Dict, Any
+import json
+import boto3
+import bcrypt
+from jose import jwt, JWTError
+from datetime import datetime, timedelta
+import uuid
+import os
+import asyncio
+from collections import defaultdict
+import re
 
-import { UserPlus, Eye, Edit, Mail, Shield, Trash2, X, Plus, Check, Search, Filter, Users, Calendar, MapPin, Clock, AlertCircle, CheckCircle } from 'lucide-react';
-import { useState, useEffect } from 'react';
-import { User, UserCreate, UserUpdate } from '../types/user';
-import { userService } from '../services/userService';
-import { hotels } from '../lib/hotels';
+router = APIRouter()
+security = HTTPBearer()
 
-interface InlineUserManagementProps {
-  className?: string;
-}
+# Configuration
+s3 = boto3.client(
+    's3',
+    aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+    aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
+    region_name=os.getenv('AWS_REGION')
+)
+BUCKET_NAME = os.getenv("AWS_BUCKET_NAME")
+USERS_KEY = "data/users.json"
+AUDIT_LOG_KEY = "data/audit_logs.json"
+SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-here-change-this")
+REFRESH_SECRET_KEY = os.getenv("REFRESH_SECRET_KEY", "your-refresh-secret-key-here")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 15  # Short-lived access tokens
+REFRESH_TOKEN_EXPIRE_DAYS = 7
+MAX_LOGIN_ATTEMPTS = 5
+LOCKOUT_DURATION_MINUTES = 30
 
-export default function InlineUserManagement({ className = '' }: InlineUserManagementProps) {
-  // State management
-  const [users, setUsers] = useState<User[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
+# Rate limiting storage (in production, use Redis)
+login_attempts = defaultdict(list)
+locked_accounts = {}
 
-  // Modal states
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [showEditModal, setShowEditModal] = useState(false);
-  const [showViewModal, setShowViewModal] = useState(false);
-  const [selectedUser, setSelectedUser] = useState<User | null>(null);
+# Password strength requirements
+MIN_PASSWORD_LENGTH = 8
+REQUIRE_UPPERCASE = True
+REQUIRE_LOWERCASE = True
+REQUIRE_NUMBERS = True
+REQUIRE_SPECIAL_CHARS = True
 
-  // Filter and search states
-  const [searchTerm, setSearchTerm] = useState('');
-  const [filterRole, setFilterRole] = useState('All Roles');
-  const [filterHotel, setFilterHotel] = useState('All Hotels');
-  const [filterStatus, setFilterStatus] = useState('All Status');
-  const [showFilters, setShowFilters] = useState(false);
+# Pydantic Models
+class UserCreate(BaseModel):
+    name: str
+    email: EmailStr
+    role: str
+    hotel: str
+    password: str
 
-  // Form states
-  const [newUser, setNewUser] = useState<UserCreate>({
-    name: '',
-    email: '',
-    role: '',
-    hotel: '',
-    password: ''
-  });
-
-  const [editUser, setEditUser] = useState<UserUpdate>({});
-
-  // Multi-select hotel state for forms
-  const [selectedHotelsForAdd, setSelectedHotelsForAdd] = useState<string[]>([]);
-  const [selectedHotelsForEdit, setSelectedHotelsForEdit] = useState<string[]>([]);
-  const [showHotelDropdownAdd, setShowHotelDropdownAdd] = useState(false);
-  const [showHotelDropdownEdit, setShowHotelDropdownEdit] = useState(false);
-
-  // Available roles
-  const availableRoles = [
-    'System Admin',
-    'Group Operations Manager',
-    'Regional Manager',
-    'Hotel Manager',
-    'Assistant Manager',
-    'Department Head',
-    'Team Lead',
-    'Staff Member',
-    'Maintenance Lead',
-    'Contractor'
-  ];
-
-  // Fetch users
-  const fetchUsers = async () => {
-    try {
-      setLoading(true);
-      const filters = {
-        role: filterRole !== 'All Roles' ? filterRole : undefined,
-        hotel: filterHotel !== 'All Hotels' ? filterHotel : undefined,
-        status: filterStatus !== 'All Status' ? filterStatus : undefined,
-        search: searchTerm || undefined
-      };
-      const userData = await userService.getUsers(filters);
-      setUsers(userData);
-      setError('');
-    } catch (error) {
-      setError(`Failed to fetch users: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchUsers();
-  }, [filterRole, filterHotel, filterStatus, searchTerm]);
-
-  // Clear messages after timeout
-  useEffect(() => {
-    if (error) {
-      const timer = setTimeout(() => setError(''), 5000);
-      return () => clearTimeout(timer);
-    }
-  }, [error]);
-
-  useEffect(() => {
-    if (success) {
-      const timer = setTimeout(() => setSuccess(''), 3000);
-      return () => clearTimeout(timer);
-    }
-  }, [success]);
-
-  // Handle form submissions
-  const handleAddUser = async (e: React.FormEvent) => {
-    e.preventDefault();
+    @validator('email')
+    def normalize_email(cls, v):
+        return v.lower().strip()
     
-    if (!newUser.name || !newUser.email || !newUser.role || !newUser.password) {
-      setError('Please fill in all required fields');
-      return;
-    }
+    @validator('password')
+    def validate_password_strength(cls, v):
+        if len(v) < MIN_PASSWORD_LENGTH:
+            raise ValueError(f'Password must be at least {MIN_PASSWORD_LENGTH} characters long')
+        
+        if REQUIRE_UPPERCASE and not re.search(r'[A-Z]', v):
+            raise ValueError('Password must contain at least one uppercase letter')
+        
+        if REQUIRE_LOWERCASE and not re.search(r'[a-z]', v):
+            raise ValueError('Password must contain at least one lowercase letter')
+        
+        if REQUIRE_NUMBERS and not re.search(r'\d', v):
+            raise ValueError('Password must contain at least one number')
+        
+        if REQUIRE_SPECIAL_CHARS and not re.search(r'[!@#$%^&*(),.?":{}|<>]', v):
+            raise ValueError('Password must contain at least one special character')
+        
+        return v
 
-    // Password validation
-    if (newUser.password.length < 8) {
-      setError('Password must be at least 8 characters long');
-      return;
-    }
+class UserUpdate(BaseModel):
+    name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    role: Optional[str] = None
+    hotel: Optional[str] = None
+    status: Optional[str] = None
 
-    const hasUppercase = /[A-Z]/.test(newUser.password);
-    const hasLowercase = /[a-z]/.test(newUser.password);
-    const hasNumbers = /\d/.test(newUser.password);
-    const hasSpecialChar = /[!@#$%^&*(),.?":{}|<>]/.test(newUser.password);
+    @validator('email')
+    def normalize_email(cls, v):
+        if v is not None:
+            return v.lower().strip()
+        return v
 
-    if (!hasUppercase || !hasLowercase || !hasNumbers || !hasSpecialChar) {
-      setError('Password must contain at least one uppercase letter, one lowercase letter, one number, and one special character');
-      return;
-    }
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
 
-    const hotelString = selectedHotelsForAdd.length > 0 ? selectedHotelsForAdd.join(', ') : 'All Hotels';
+    @validator('email')
+    def normalize_email(cls, v):
+        return v.lower().strip()
 
-    try {
-      await userService.createUser({
-        ...newUser,
-        hotel: hotelString
-      });
-      setSuccess('User created successfully');
-      setShowAddModal(false);
-      setNewUser({ name: '', email: '', role: '', hotel: '', password: '' });
-      setSelectedHotelsForAdd([]);
-      fetchUsers();
-    } catch (error) {
-      setError(`Failed to create user: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  };
-
-  const handleEditUser = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedUser) return;
-
-    const hotelString = selectedHotelsForEdit.length > 0 ? selectedHotelsForEdit.join(', ') : selectedUser.hotel;
-
-    try {
-      await userService.updateUser(selectedUser.id, {
-        ...editUser,
-        hotel: hotelString
-      });
-      setSuccess('User updated successfully');
-      setShowEditModal(false);
-      setEditUser({});
-      setSelectedUser(null);
-      setSelectedHotelsForEdit([]);
-      fetchUsers();
-    } catch (error) {
-      setError(`Failed to update user: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  };
-
-  // Handle user actions
-  const handleViewUser = (user: User) => {
-    setSelectedUser(user);
-    setShowViewModal(true);
-  };
-
-  const handleEditUserClick = (user: User) => {
-    setSelectedUser(user);
-    setEditUser({
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      status: user.status
-    });
+class PasswordReset(BaseModel):
+    password: str
     
-    // Parse hotels for editing
-    if (user.hotel && user.hotel !== 'All Hotels') {
-      const userHotels = user.hotel.split(', ');
-      setSelectedHotelsForEdit(userHotels);
-    } else {
-      setSelectedHotelsForEdit([]);
-    }
+    @validator('password')
+    def validate_password_strength(cls, v):
+        if len(v) < MIN_PASSWORD_LENGTH:
+            raise ValueError(f'Password must be at least {MIN_PASSWORD_LENGTH} characters long')
+        
+        if REQUIRE_UPPERCASE and not re.search(r'[A-Z]', v):
+            raise ValueError('Password must contain at least one uppercase letter')
+        
+        if REQUIRE_LOWERCASE and not re.search(r'[a-z]', v):
+            raise ValueError('Password must contain at least one lowercase letter')
+        
+        if REQUIRE_NUMBERS and not re.search(r'\d', v):
+            raise ValueError('Password must contain at least one number')
+        
+        if REQUIRE_SPECIAL_CHARS and not re.search(r'[!@#$%^&*(),.?":{}|<>]', v):
+            raise ValueError('Password must contain at least one special character')
+        
+        return v
+
+class TokenRefresh(BaseModel):
+    refresh_token: str
+
+class User(BaseModel):
+    id: str
+    name: str
+    email: str
+    role: str
+    hotel: str
+    status: str = "Active"
+    created_at: str
+    last_login: Optional[str] = None
+    failed_login_attempts: Optional[int] = 0
+    locked_until: Optional[str] = None
+
+class UserResponse(BaseModel):
+    id: str
+    name: str
+    email: str
+    role: str
+    hotel: str
+    status: str
+    created_at: str
+    last_login: Optional[str]
+
+class TokenResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str
+    user: UserResponse
+    expires_in: int
+
+class StandardResponse(BaseModel):
+    message: str
+    success: bool = True
+
+# Helper Functions
+def load_users() -> dict:
+    """Load users from S3"""
+    try:
+        obj = s3.get_object(Bucket=BUCKET_NAME, Key=USERS_KEY)
+        return json.loads(obj["Body"].read().decode("utf-8"))
+    except s3.exceptions.NoSuchKey:
+        return {}
+    except Exception:
+        return {}
+
+def save_users(users: dict):
+    """Save users to S3"""
+    try:
+        s3.put_object(
+            Bucket=BUCKET_NAME,
+            Key=USERS_KEY,
+            Body=json.dumps(users, indent=2),
+            ContentType="application/json"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save users: {str(e)}")
+
+def log_audit_event(event_type: str, user_id: str, details: dict, ip_address: str = None):
+    """Log audit events"""
+    try:
+        # Load existing logs
+        try:
+            obj = s3.get_object(Bucket=BUCKET_NAME, Key=AUDIT_LOG_KEY)
+            logs = json.loads(obj["Body"].read().decode("utf-8"))
+        except s3.exceptions.NoSuchKey:
+            logs = []
+        
+        # Add new log entry
+        log_entry = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "event_type": event_type,
+            "user_id": user_id,
+            "ip_address": ip_address,
+            "details": details
+        }
+        logs.append(log_entry)
+        
+        # Keep only last 10000 entries to prevent infinite growth
+        if len(logs) > 10000:
+            logs = logs[-10000:]
+        
+        # Save logs
+        s3.put_object(
+            Bucket=BUCKET_NAME,
+            Key=AUDIT_LOG_KEY,
+            Body=json.dumps(logs, indent=2),
+            ContentType="application/json"
+        )
+    except Exception as e:
+        # Don't fail the main operation if logging fails
+        print(f"Audit logging failed: {e}")
+
+def find_user_by_email(users: dict, email: str) -> tuple:
+    """Find user by email (case-insensitive)"""
+    normalized_email = email.lower().strip()
+    for user_id, user_data in users.items():
+        if user_data["email"].lower().strip() == normalized_email:
+            return user_id, user_data
+    return None, None
+
+def hash_password(password: str) -> str:
+    """Hash password using bcrypt with higher cost factor"""
+    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt(rounds=12)).decode('utf-8')
+
+def verify_password(password: str, hashed: str) -> bool:
+    """Verify password against hash"""
+    return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    """Create JWT access token"""
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire, "type": "access"})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+def create_refresh_token(data: dict):
+    """Create JWT refresh token"""
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    to_encode.update({"exp": expire, "type": "refresh"})
+    encoded_jwt = jwt.encode(to_encode, REFRESH_SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Verify JWT access token"""
+    try:
+        payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        token_type: str = payload.get("type")
+        
+        if email is None or token_type != "access":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return email
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+def get_current_user(email: str = Depends(verify_token)):
+    """Get current user from token"""
+    users = load_users()
+    user_id, user_data = find_user_by_email(users, email)
     
-    setShowEditModal(true);
-  };
-
-  const handleDeleteUser = async (userId: string, userName: string) => {
-    if (!confirm(`Are you sure you want to permanently delete ${userName}? This action cannot be undone and will remove all user data.`)) {
-      return;
-    }
-
-    try {
-      const response = await userService.deleteUser(userId);
-      setSuccess(response.message || 'User deleted successfully');
-      fetchUsers();
-    } catch (error) {
-      setError(`Failed to delete user: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  };
-
-  const handleResetPassword = async (userId: string) => {
-    const newPassword = prompt('Enter new password (minimum 8 characters with uppercase, lowercase, number, and special character):');
-    if (!newPassword || newPassword.length < 8) {
-      setError('Password must be at least 8 characters long');
-      return;
-    }
-
-    // Basic password validation
-    const hasUppercase = /[A-Z]/.test(newPassword);
-    const hasLowercase = /[a-z]/.test(newPassword);
-    const hasNumbers = /\d/.test(newPassword);
-    const hasSpecialChar = /[!@#$%^&*(),.?":{}|<>]/.test(newPassword);
-
-    if (!hasUppercase || !hasLowercase || !hasNumbers || !hasSpecialChar) {
-      setError('Password must contain at least one uppercase letter, one lowercase letter, one number, and one special character');
-      return;
-    }
-
-    try {
-      const response = await userService.resetPassword(userId, newPassword);
-      setSuccess(response.message || 'Password reset successfully');
-    } catch (error) {
-      setError(`Failed to reset password: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  };
-
-  const handleActivateUser = async (userId: string) => {
-    try {
-      const response = await userService.activateUser(userId);
-      setSuccess(response.message || 'User activated successfully');
-      fetchUsers();
-    } catch (error) {
-      setError(`Failed to activate user: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  };
-
-  // Hotel selection handlers
-  const handleHotelToggle = (hotelName: string, isForEdit: boolean = false) => {
-    if (isForEdit) {
-      setSelectedHotelsForEdit(prev => 
-        prev.includes(hotelName) 
-          ? prev.filter(h => h !== hotelName)
-          : [...prev, hotelName]
-      );
-    } else {
-      setSelectedHotelsForAdd(prev => 
-        prev.includes(hotelName) 
-          ? prev.filter(h => h !== hotelName)
-          : [...prev, hotelName]
-      );
-    }
-  };
-
-  // Get unique values for filters
-  const uniqueRoles = [...new Set(users.map(user => user.role))];
-  const uniqueHotels = [...new Set(users.map(user => user.hotel))];
-
-  // Filter users based on search and filters
-  const filteredUsers = users.filter(user => {
-    const matchesSearch = user.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         user.email.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesRole = filterRole === 'All Roles' || user.role === filterRole;
-    const matchesHotel = filterHotel === 'All Hotels' || user.hotel === filterHotel;
-    const matchesStatus = filterStatus === 'All Status' || user.status === filterStatus;
+    if not user_data:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found"
+        )
     
-    return matchesSearch && matchesRole && matchesHotel && matchesStatus;
-  });
+    if user_data["status"] != "Active":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Account is inactive"
+        )
+    
+    return User(**user_data, id=user_id)
 
-  // Helper function to get user initials
-  const getUserInitials = (name: string) => {
-    return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
-  };
+def require_admin(current_user: User = Depends(get_current_user)):
+    """Require admin privileges"""
+    admin_roles = ['system admin', 'administrator', 'admin']
+    if not any(role.lower() in current_user.role.lower() for role in admin_roles):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin privileges required"
+        )
+    return current_user
 
-  // Helper function to format date
-  const formatDate = (dateString: string | null) => {
-    if (!dateString) return 'Never';
-    return new Date(dateString).toLocaleDateString('en-GB', {
-      day: '2-digit',
-      month: 'short',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-  };
+def require_manager_or_admin(current_user: User = Depends(get_current_user)):
+    """Require manager or admin privileges"""
+    privileged_roles = ['system admin', 'administrator', 'admin', 'manager', 'boss', 'director']
+    if not any(role.lower() in current_user.role.lower() for role in privileged_roles):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Manager or admin privileges required"
+        )
+    return current_user
 
-  // Helper function to get status badge color
-  const getStatusBadgeColor = (status: string) => {
-    return status === 'Active' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800';
-  };
+def check_rate_limit(email: str, ip_address: str) -> bool:
+    """Check if user has exceeded login rate limit"""
+    now = datetime.utcnow()
+    
+    # Clean old attempts (older than lockout duration)
+    cutoff_time = now - timedelta(minutes=LOCKOUT_DURATION_MINUTES)
+    login_attempts[email] = [attempt for attempt in login_attempts[email] if attempt > cutoff_time]
+    
+    # Check if account is locked
+    if email in locked_accounts:
+        if now < locked_accounts[email]:
+            return False
+        else:
+            # Unlock account
+            del locked_accounts[email]
+            login_attempts[email] = []
+    
+    # Check number of recent attempts
+    return len(login_attempts[email]) < MAX_LOGIN_ATTEMPTS
 
-  return (
-    <>
-      <div className={`bg-white rounded-lg border ${className}`}>
-        {/* Header Section */}
-        <div className="px-6 py-4 border-b border-gray-200">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-            <div className="flex items-center space-x-3">
-              <div className="p-2 bg-blue-100 rounded-lg">
-                <Users className="w-5 h-5 text-blue-600" />
-              </div>
-              <div>
-                <h2 className="text-lg font-semibold text-gray-900">User Management</h2>
-                <p className="text-sm text-gray-600">{filteredUsers.length} of {users.length} users</p>
-              </div>
-            </div>
+def record_failed_login(email: str, ip_address: str):
+    """Record failed login attempt"""
+    now = datetime.utcnow()
+    login_attempts[email].append(now)
+    
+    # Lock account if too many attempts
+    if len(login_attempts[email]) >= MAX_LOGIN_ATTEMPTS:
+        locked_accounts[email] = now + timedelta(minutes=LOCKOUT_DURATION_MINUTES)
+
+def get_client_ip(request: Request) -> str:
+    """Get client IP address"""
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host
+
+# Authentication Routes
+@router.post("/auth/login", response_model=TokenResponse)
+async def login(user_login: UserLogin, request: Request, background_tasks: BackgroundTasks):
+    """User login with rate limiting and audit logging"""
+    ip_address = get_client_ip(request)
+    
+    # Check rate limit
+    if not check_rate_limit(user_login.email, ip_address):
+        log_audit_event("login_blocked", user_login.email, {
+            "reason": "rate_limit_exceeded",
+            "ip_address": ip_address
+        })
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Too many failed login attempts. Account locked for {LOCKOUT_DURATION_MINUTES} minutes."
+        )
+    
+    users = load_users()
+    user_id, user_data = find_user_by_email(users, user_login.email)
+
+    if not user_data or not verify_password(user_login.password, user_data["password"]):
+        record_failed_login(user_login.email, ip_address)
+        log_audit_event("login_failed", user_login.email, {
+            "reason": "invalid_credentials",
+            "ip_address": ip_address
+        })
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password"
+        )
+
+    if user_data["status"] != "Active":
+        log_audit_event("login_failed", user_id, {
+            "reason": "account_inactive",
+            "ip_address": ip_address
+        })
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Account is inactive"
+        )
+
+    # Clear failed attempts on successful login
+    if user_login.email in login_attempts:
+        del login_attempts[user_login.email]
+
+    # Update last login
+    user_data["last_login"] = datetime.utcnow().isoformat()
+    user_data["failed_login_attempts"] = 0
+    users[user_id] = user_data
+    save_users(users)
+
+    # Create tokens
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user_data["email"]}, expires_delta=access_token_expires
+    )
+    refresh_token = create_refresh_token(data={"sub": user_data["email"]})
+
+    user_response = UserResponse(**user_data, id=user_id)
+    
+    # Log successful login
+    log_audit_event("login_success", user_id, {
+        "ip_address": ip_address,
+        "user_agent": request.headers.get("user-agent", "unknown")
+    })
+
+    return TokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_type="bearer",
+        user=user_response,
+        expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60
+    )
+
+@router.post("/auth/refresh", response_model=TokenResponse)
+async def refresh_token(token_data: TokenRefresh, request: Request):
+    """Refresh access token using refresh token"""
+    try:
+        payload = jwt.decode(token_data.refresh_token, REFRESH_SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        token_type: str = payload.get("type")
+        
+        if email is None or token_type != "refresh":
+            raise JWTError("Invalid refresh token")
             
-            <button
-              onClick={() => setShowAddModal(true)}
-              className="inline-flex items-center px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
-            >
-              <UserPlus className="w-4 h-4 mr-2" />
-              Add User
-            </button>
-          </div>
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh token"
+        )
+    
+    # Get user
+    users = load_users()
+    user_id, user_data = find_user_by_email(users, email)
+    
+    if not user_data or user_data["status"] != "Active":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or inactive"
+        )
+    
+    # Create new tokens
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user_data["email"]}, expires_delta=access_token_expires
+    )
+    new_refresh_token = create_refresh_token(data={"sub": user_data["email"]})
+    
+    user_response = UserResponse(**user_data, id=user_id)
+    
+    # Log token refresh
+    log_audit_event("token_refresh", user_id, {
+        "ip_address": get_client_ip(request)
+    })
+    
+    return TokenResponse(
+        access_token=access_token,
+        refresh_token=new_refresh_token,
+        token_type="bearer",
+        user=user_response,
+        expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60
+    )
 
-          {/* Search and Filters */}
-          <div className="mt-4 space-y-3">
-            <div className="flex flex-col sm:flex-row gap-3">
-              <div className="flex-1 relative">
-                <Search className="w-4 h-4 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-                <input
-                  type="text"
-                  placeholder="Search users by name or email..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                />
-              </div>
-              
-              <button
-                onClick={() => setShowFilters(!showFilters)}
-                className="inline-flex items-center px-3 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 transition-colors"
-              >
-                <Filter className="w-4 h-4 mr-2" />
-                Filters
-              </button>
-            </div>
+@router.post("/auth/logout", response_model=StandardResponse)
+async def logout(current_user: User = Depends(get_current_user), request: Request = None):
+    """User logout with audit logging"""
+    log_audit_event("logout", current_user.id, {
+        "ip_address": get_client_ip(request) if request else None
+    })
+    return StandardResponse(message="Successfully logged out")
 
-            {showFilters && (
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-4 bg-gray-50 rounded-lg">
-                <select
-                  value={filterRole}
-                  onChange={(e) => setFilterRole(e.target.value)}
-                  className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                >
-                  <option value="All Roles">All Roles</option>
-                  {uniqueRoles.map(role => (
-                    <option key={role} value={role}>{role}</option>
-                  ))}
-                </select>
+# Admin-Only User Management Routes
+@router.get("/", response_model=List[UserResponse])
+async def get_users(
+    role: Optional[str] = None,
+    hotel: Optional[str] = None,
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    current_user: User = Depends(require_admin)
+):
+    """Get all users with optional filtering - ADMIN ONLY"""
+    users = load_users()
+    user_list = []
 
-                <select
-                  value={filterHotel}
-                  onChange={(e) => setFilterHotel(e.target.value)}
-                  className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                >
-                  <option value="All Hotels">All Hotels</option>
-                  {uniqueHotels.map(hotel => (
-                    <option key={hotel} value={hotel}>{hotel}</option>
-                  ))}
-                </select>
+    for user_id, user_data in users.items():
+        user_response = UserResponse(**user_data, id=user_id)
 
-                <select
-                  value={filterStatus}
-                  onChange={(e) => setFilterStatus(e.target.value)}
-                  className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                >
-                  <option value="All Status">All Status</option>
-                  <option value="Active">Active</option>
-                  <option value="Inactive">Inactive</option>
-                </select>
-              </div>
-            )}
-          </div>
-        </div>
+        # Apply filters
+        if role and user_data["role"] != role:
+            continue
+        if hotel and hotel != "All Hotels" and user_data["hotel"] != hotel:
+            continue
+        if status and user_data["status"] != status:
+            continue
+        if search and search.lower() not in user_data["name"].lower() and search.lower() not in user_data["email"].lower():
+            continue
 
-        {/* Status Messages */}
-        {error && (
-          <div className="mx-6 mt-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-center">
-            <AlertCircle className="w-5 h-5 text-red-500 mr-2 flex-shrink-0" />
-            <span className="text-red-700 text-sm">{error}</span>
-          </div>
-        )}
+        user_list.append(user_response)
 
-        {success && (
-          <div className="mx-6 mt-4 p-3 bg-green-50 border border-green-200 rounded-lg flex items-center">
-            <CheckCircle className="w-5 h-5 text-green-500 mr-2 flex-shrink-0" />
-            <span className="text-green-700 text-sm">{success}</span>
-          </div>
-        )}
+    return user_list
 
-        {/* Users Table */}
-        <div className="overflow-x-auto">
-          {loading ? (
-            <div className="flex items-center justify-center py-12">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-              <span className="ml-3 text-gray-600">Loading users...</span>
-            </div>
-          ) : filteredUsers.length === 0 ? (
-            <div className="text-center py-12">
-              <Users className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-              <p className="text-gray-500">No users found matching your criteria</p>
-            </div>
-          ) : (
-            <table className="w-full">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Role</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Hotel Access</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Login</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {filteredUsers.map((user) => (
-                  <tr key={user.id} className="hover:bg-gray-50 transition-colors">
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="flex items-center">
-                        <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-medium text-sm">
-                          {getUserInitials(user.name)}
-                        </div>
-                        <div className="ml-4">
-                          <div className="text-sm font-medium text-gray-900">{user.name}</div>
-                          <div className="text-sm text-gray-500">{user.email}</div>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm text-gray-900">{user.role}</div>
-                    </td>
-                    <td className="px-6 py-4">
-                      <div className="text-sm text-gray-900">
-                        {user.hotel === 'All Hotels' ? (
-                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                            All Hotels
-                          </span>
-                        ) : (
-                          <span className="text-sm text-gray-900">{user.hotel}</span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusBadgeColor(user.status)}`}>
-                        {user.status}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm text-gray-900 flex items-center">
-                        <Clock className="w-4 h-4 mr-1 text-gray-400" />
-                        {formatDate(user.last_login)}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                      <div className="flex items-center space-x-2">
-                        <button
-                          onClick={() => handleViewUser(user)}
-                          className="text-blue-600 hover:text-blue-900 p-1 rounded transition-colors"
-                          title="View Details"
-                        >
-                          <Eye className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => handleEditUserClick(user)}
-                          className="text-indigo-600 hover:text-indigo-900 p-1 rounded transition-colors"
-                          title="Edit User"
-                        >
-                          <Edit className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => window.open(`mailto:${user.email}`, '_blank')}
-                          className="text-green-600 hover:text-green-900 p-1 rounded transition-colors"
-                          title="Send Email"
-                        >
-                          <Mail className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => handleResetPassword(user.id)}
-                          className="text-orange-600 hover:text-orange-900 p-1 rounded transition-colors"
-                          title="Reset Password"
-                        >
-                          <Shield className="w-4 h-4" />
-                        </button>
-      
+@router.get("/{user_id}", response_model=UserResponse)
+async def get_user(user_id: str, current_user: User = Depends(require_manager_or_admin)):
+    """Get a specific user - MANAGER/ADMIN ONLY"""
+    users = load_users()
+
+    if user_id not in users:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return UserResponse(**users[user_id], id=user_id)
+
+@router.post("/", response_model=UserResponse)
+async def create_user(user_create: UserCreate, request: Request, current_user: User = Depends(require_admin)):
+    """Create a new user - ADMIN ONLY"""
+    users = load_users()
+
+    # Check if email already exists
+    existing_user_id, existing_user_data = find_user_by_email(users, user_create.email)
+    if existing_user_data:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    # Create new user
+    user_id = str(uuid.uuid4())
+    hashed_password = hash_password(user_create.password)
+
+    new_user = {
+        "name": user_create.name,
+        "email": user_create.email,
+        "role": user_create.role,
+        "hotel": user_create.hotel,
+        "password": hashed_password,
+        "status": "Active",
+        "created_at": datetime.utcnow().isoformat(),
+        "last_login": None,
+        "failed_login_attempts": 0,
+        "locked_until": None
+    }
+
+    users[user_id] = new_user
+    save_users(users)
+    
+    # Log user creation
+    log_audit_event("user_created", user_id, {
+        "created_by": current_user.id,
+        "user_email": user_create.email,
+        "user_role": user_create.role,
+        "ip_address": get_client_ip(request)
+    })
+
+    return UserResponse(**new_user, id=user_id)
+
+@router.put("/{user_id}", response_model=UserResponse)
+async def update_user(
+    user_id: str, 
+    user_update: UserUpdate,
+    request: Request,
+    current_user: User = Depends(require_admin)
+):
+    """Update a user - ADMIN ONLY"""
+    users = load_users()
+
+    if user_id not in users:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user_data = users[user_id]
+    original_data = user_data.copy()
+
+    # Update fields
+    if user_update.name is not None:
+        user_data["name"] = user_update.name
+    if user_update.email is not None:
+        # Check if new email already exists
+        existing_user_id, existing_user_data = find_user_by_email(users, user_update.email)
+        if existing_user_data and existing_user_id != user_id:
+            raise HTTPException(status_code=400, detail="Email already exists")
+        user_data["email"] = user_update.email
+    if user_update.role is not None:
+        user_data["role"] = user_update.role
+    if user_update.hotel is not None:
+        user_data["hotel"] = user_update.hotel
+    if user_update.status is not None:
+        user_data["status"] = user_update.status
+
+    users[user_id] = user_data
+    save_users(users)
+    
+    # Log user update
+    changes = {}
+    for key, new_value in user_data.items():
+        if key in original_data and original_data[key] != new_value and key != "password":
+            changes[key] = {"from": original_data[key], "to": new_value}
+    
+    log_audit_event("user_updated", user_id, {
+        "updated_by": current_user.id,
+        "changes": changes,
+        "ip_address": get_client_ip(request)
+    })
+
+    return UserResponse(**user_data, id=user_id)
+
+@router.delete("/{user_id}", response_model=StandardResponse)
+async def delete_user(user_id: str, request: Request, current_user: User = Depends(require_admin)):
+    """Permanently delete a user - ADMIN ONLY"""
+    users = load_users()
+
+    if user_id not in users:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Store user info for logging before deletion
+    deleted_user = users[user_id]
+
+    # Actually delete the user from the dictionary
+    del users[user_id]
+    save_users(users)
+    
+    # Log user deletion
+    log_audit_event("user_deleted", user_id, {
+        "deleted_by": current_user.id,
+        "deleted_user_email": deleted_user["email"],
+        "deleted_user_role": deleted_user["role"],
+        "ip_address": get_client_ip(request)
+    })
+
+    return StandardResponse(message="User deleted successfully")
+
+@router.put("/{user_id}/reset-password", response_model=StandardResponse)
+async def reset_password(
+    user_id: str, 
+    password_data: PasswordReset,
+    request: Request,
+    current_user: User = Depends(require_admin)
+):
+    """Reset user password - ADMIN ONLY"""
+    users = load_users()
+
+    if user_id not in users:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Hash new password
+    hashed_password = hash_password(password_data.password)
+    users[user_id]["password"] = hashed_password
+    users[user_id]["failed_login_attempts"] = 0
+    users[user_id]["locked_until"] = None
+    save_users(users)
+    
+    # Log password reset
+    log_audit_event("password_reset", user_id, {
+        "reset_by": current_user.id,
+        "target_user_email": users[user_id]["email"],
+        "ip_address": get_client_ip(request)
+    })
+
+    return StandardResponse(message="Password reset successfully")
+
+@router.post("/{user_id}/activate", response_model=StandardResponse)
+async def activate_user(user_id: str, request: Request, current_user: User = Depends(require_admin)):
+    """Activate a user - ADMIN ONLY"""
+    users = load_users()
+
+    if user_id not in users:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    users[user_id]["status"] = "Active"
+    users[user_id]["failed_login_attempts"] = 0
+    users[user_id]["locked_until"] = None
+    save_users(users)
+    
+    # Log user activation
+    log_audit_event("user_activated", user_id, {
+        "activated_by": current_user.id,
+        "user_email": users[user_id]["email"],
+        "ip_address": get_client_ip(request)
+    })
+
+    return StandardResponse(message="User activated successfully")
+
+@router.get("/stats/summary")
+async def get_user_stats(current_user: User = Depends(require_manager_or_admin)):
+    """Get user statistics - MANAGER/ADMIN ONLY"""
+    users = load_users()
+
+    total_users = len(users)
+    active_users = sum(1 for user in users.values() if user["status"] == "Active")
+    inactive_users = total_users - active_users
+
+    # Count by role
+    roles = {}
+    for user in users.values():
+        role = user["role"]
+        roles[role] = roles.get(role, 0) + 1
+
+    # Count by hotel
+    hotels = {}
+    for user in users.values():
+        hotel = user["hotel"]
+        hotels[hotel] = hotels.get(hotel, 0) + 1
+
+    return {
+        "total_users": total_users,
+        "active_users": active_users,
+        "inactive_users": inactive_users,
+        "roles": roles,
+        "hotels": hotels
+    }
+
+@router.get("/me", response_model=UserResponse)
+async def get_me(current_user: User = Depends(get_current_user)):
+    """Get current user profile"""
+    return UserResponse(**current_user.dict())
+
+# Audit log endpoint for super admins
+@router.get("/audit/logs")
+async def get_audit_logs(
+    limit: int = 100,
+    event_type: Optional[str] = None,
+    current_user: User = Depends(require_admin)
+):
+    """Get audit logs - ADMIN ONLY"""
+    try:
+        obj = s3.get_object(Bucket=BUCKET_NAME, Key=AUDIT_LOG_KEY)
+        logs = json.loads(obj["Body"].read().decode("utf-8"))
+        
+        # Filter by event type if specified
+        if event_type:
+            logs = [log for log in logs if log.get("event_type") == event_type]
+        
+        # Return most recent logs
+        return logs[-limit:]
+    except s3.exceptions.NoSuchKey:
+        return []
