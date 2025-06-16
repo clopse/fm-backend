@@ -734,3 +734,271 @@ async def get_audit_logs(
         return logs[-limit:]
     except s3.exceptions.NoSuchKey:
         return []
+
+# Add these new routes to your existing user.py router
+
+from app.services.email_service import email_service, EmailTemplates, PasswordResetManager
+
+# Initialize password reset manager
+reset_manager = PasswordResetManager(s3, BUCKET_NAME)
+
+# Add these new Pydantic models to your existing models:
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+    
+    @validator('email')
+    def normalize_email(cls, v):
+        return v.lower().strip()
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+    
+    @validator('new_password')
+    def validate_password_strength(cls, v):
+        if len(v) < MIN_PASSWORD_LENGTH:
+            raise ValueError(f'Password must be at least {MIN_PASSWORD_LENGTH} characters long')
+        
+        if REQUIRE_UPPERCASE and not re.search(r'[A-Z]', v):
+            raise ValueError('Password must contain at least one uppercase letter')
+        
+        if REQUIRE_LOWERCASE and not re.search(r'[a-z]', v):
+            raise ValueError('Password must contain at least one lowercase letter')
+        
+        if REQUIRE_NUMBERS and not re.search(r'\d', v):
+            raise ValueError('Password must contain at least one number')
+        
+        if REQUIRE_SPECIAL_CHARS and not re.search(r'[!@#$%^&*(),.?":{}|<>]', v):
+            raise ValueError('Password must contain at least one special character')
+        
+        return v
+
+# Add these new routes to your router:
+
+@router.post("/auth/forgot-password", response_model=StandardResponse)
+async def forgot_password(request_data: ForgotPasswordRequest, request: Request):
+    """Send password reset email"""
+    users = load_users()
+    user_id, user_data = find_user_by_email(users, request_data.email)
+    
+    # Always return success to prevent email enumeration attacks
+    # But only send email if user exists
+    if user_data and user_data.get("status") == "Active":
+        try:
+            # Create reset token
+            reset_token = reset_manager.create_reset_token(user_id, expires_minutes=15)
+            
+            # Build reset URL
+            frontend_url = os.getenv("FRONTEND_URL", "https://jmkfacilities.ie")
+            reset_url = f"{frontend_url}/reset-password?token={reset_token}"
+            
+            # Generate email content
+            html_content, text_content = EmailTemplates.password_reset_template(
+                reset_link=reset_url,
+                user_name=user_data["name"],
+                expires_minutes=15
+            )
+            
+            # Send email
+            email_sent = await email_service.send_email(
+                to_emails=[user_data["email"]],
+                subject="Password Reset Request - JMK Facilities",
+                html_content=html_content,
+                text_content=text_content
+            )
+            
+            if email_sent:
+                # Log password reset request
+                log_audit_event("password_reset_requested", user_id, {
+                    "email": user_data["email"],
+                    "ip_address": get_client_ip(request),
+                    "reset_token_created": True
+                })
+            else:
+                logger.error(f"Failed to send password reset email to {user_data['email']}")
+                
+        except Exception as e:
+            logger.error(f"Error in forgot password process: {str(e)}")
+    
+    # Always return success message
+    return StandardResponse(
+        message="If your email address is registered, you will receive a password reset link shortly."
+    )
+
+@router.post("/auth/reset-password", response_model=StandardResponse)
+async def reset_password_with_token(request_data: ResetPasswordRequest, request: Request):
+    """Reset password using reset token"""
+    
+    # Validate and consume token
+    user_id = reset_manager.consume_reset_token(request_data.token)
+    
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token"
+        )
+    
+    # Load users and update password
+    users = load_users()
+    
+    if user_id not in users:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Hash new password and update user
+    hashed_password = hash_password(request_data.new_password)
+    users[user_id]["password"] = hashed_password
+    users[user_id]["failed_login_attempts"] = 0
+    users[user_id]["locked_until"] = None
+    
+    save_users(users)
+    
+    # Log password reset completion
+    log_audit_event("password_reset_completed", user_id, {
+        "email": users[user_id]["email"],
+        "ip_address": get_client_ip(request),
+        "reset_via_token": True
+    })
+    
+    return StandardResponse(message="Password reset successfully. You can now login with your new password.")
+
+@router.post("/auth/send-welcome-email/{user_id}", response_model=StandardResponse)
+async def send_welcome_email(user_id: str, current_user: User = Depends(require_admin)):
+    """Send welcome email to new user - ADMIN ONLY"""
+    users = load_users()
+    
+    if user_id not in users:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user_data = users[user_id]
+    
+    try:
+        # Build login URL
+        frontend_url = os.getenv("FRONTEND_URL", "https://jmkfacilities.ie")
+        login_url = f"{frontend_url}/login"
+        
+        # Generate welcome email
+        html_content, text_content = EmailTemplates.welcome_email_template(
+            user_name=user_data["name"],
+            user_email=user_data["email"],
+            login_url=login_url
+        )
+        
+        # Send email
+        email_sent = await email_service.send_email(
+            to_emails=[user_data["email"]],
+            subject="Welcome to JMK Facilities Management System",
+            html_content=html_content,
+            text_content=text_content
+        )
+        
+        if email_sent:
+            log_audit_event("welcome_email_sent", user_id, {
+                "sent_by": current_user.id,
+                "recipient_email": user_data["email"]
+            })
+            return StandardResponse(message="Welcome email sent successfully")
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send welcome email"
+            )
+            
+    except Exception as e:
+        logger.error(f"Error sending welcome email: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to send welcome email"
+        )
+
+@router.get("/auth/verify-reset-token/{token}", response_model=StandardResponse)
+async def verify_reset_token(token: str):
+    """Verify if a reset token is valid (for frontend validation)"""
+    user_id = reset_manager.validate_reset_token(token)
+    
+    if user_id:
+        return StandardResponse(message="Token is valid")
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired token"
+        )
+
+# Enhanced user creation with optional welcome email
+@router.post("/", response_model=UserResponse)
+async def create_user_enhanced(
+    user_create: UserCreate, 
+    request: Request, 
+    send_welcome_email: bool = False,
+    current_user: User = Depends(require_admin)
+):
+    """Create a new user with optional welcome email - ADMIN ONLY"""
+    users = load_users()
+
+    # Check if email already exists
+    existing_user_id, existing_user_data = find_user_by_email(users, user_create.email)
+    if existing_user_data:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    # Create new user
+    user_id = str(uuid.uuid4())
+    hashed_password = hash_password(user_create.password)
+
+    new_user = {
+        "name": user_create.name,
+        "email": user_create.email,
+        "role": user_create.role,
+        "hotel": user_create.hotel,
+        "password": hashed_password,
+        "status": "Active",
+        "created_at": datetime.utcnow().isoformat(),
+        "last_login": None,
+        "failed_login_attempts": 0,
+        "locked_until": None
+    }
+
+    users[user_id] = new_user
+    save_users(users)
+    
+    # Log user creation
+    log_audit_event("user_created", user_id, {
+        "created_by": current_user.id,
+        "user_email": user_create.email,
+        "user_role": user_create.role,
+        "ip_address": get_client_ip(request),
+        "welcome_email_requested": send_welcome_email
+    })
+
+    # Send welcome email if requested
+    if send_welcome_email:
+        try:
+            frontend_url = os.getenv("FRONTEND_URL", "https://jmkfacilities.ie")
+            login_url = f"{frontend_url}/login"
+            
+            html_content, text_content = EmailTemplates.welcome_email_template(
+                user_name=new_user["name"],
+                user_email=new_user["email"],
+                login_url=login_url
+            )
+            
+            await email_service.send_email(
+                to_emails=[new_user["email"]],
+                subject="Welcome to JMK Facilities Management System",
+                html_content=html_content,
+                text_content=text_content
+            )
+            
+            log_audit_event("welcome_email_sent", user_id, {
+                "sent_by": current_user.id,
+                "recipient_email": new_user["email"],
+                "sent_during_creation": True
+            })
+            
+        except Exception as e:
+            logger.error(f"Failed to send welcome email during user creation: {str(e)}")
+            # Don't fail user creation if email fails
+
+    return UserResponse(**new_user, id=user_id)
