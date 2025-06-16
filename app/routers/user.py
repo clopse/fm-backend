@@ -26,11 +26,13 @@ s3 = boto3.client(
 BUCKET_NAME = os.getenv("AWS_BUCKET_NAME")
 USERS_KEY = "data/users.json"
 AUDIT_LOG_KEY = "data/audit_logs.json"
+RESET_TOKENS_KEY = "data/password_reset_tokens.json"
 SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-here-change-this")
 REFRESH_SECRET_KEY = os.getenv("REFRESH_SECRET_KEY", "your-refresh-secret-key-here")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 15  # Short-lived access tokens
 REFRESH_TOKEN_EXPIRE_DAYS = 7
+PASSWORD_RESET_TOKEN_EXPIRE_MINUTES = 30
 MAX_LOGIN_ATTEMPTS = 5
 LOCKOUT_DURATION_MINUTES = 30
 
@@ -119,6 +121,36 @@ class PasswordReset(BaseModel):
         
         return v
 
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+    
+    @validator('email')
+    def normalize_email(cls, v):
+        return v.lower().strip()
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    password: str
+    
+    @validator('password')
+    def validate_password_strength(cls, v):
+        if len(v) < MIN_PASSWORD_LENGTH:
+            raise ValueError(f'Password must be at least {MIN_PASSWORD_LENGTH} characters long')
+        
+        if REQUIRE_UPPERCASE and not re.search(r'[A-Z]', v):
+            raise ValueError('Password must contain at least one uppercase letter')
+        
+        if REQUIRE_LOWERCASE and not re.search(r'[a-z]', v):
+            raise ValueError('Password must contain at least one lowercase letter')
+        
+        if REQUIRE_NUMBERS and not re.search(r'\d', v):
+            raise ValueError('Password must contain at least one number')
+        
+        if REQUIRE_SPECIAL_CHARS and not re.search(r'[!@#$%^&*(),.?":{}|<>]', v):
+            raise ValueError('Password must contain at least one special character')
+        
+        return v
+
 class TokenRefresh(BaseModel):
     refresh_token: str
 
@@ -177,6 +209,28 @@ def save_users(users: dict):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save users: {str(e)}")
+
+def load_reset_tokens() -> dict:
+    """Load password reset tokens from S3"""
+    try:
+        obj = s3.get_object(Bucket=BUCKET_NAME, Key=RESET_TOKENS_KEY)
+        return json.loads(obj["Body"].read().decode("utf-8"))
+    except s3.exceptions.NoSuchKey:
+        return {}
+    except Exception:
+        return {}
+
+def save_reset_tokens(tokens: dict):
+    """Save password reset tokens to S3"""
+    try:
+        s3.put_object(
+            Bucket=BUCKET_NAME,
+            Key=RESET_TOKENS_KEY,
+            Body=json.dumps(tokens, indent=2),
+            ContentType="application/json"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save reset tokens: {str(e)}")
 
 def log_audit_event(event_type: str, user_id: str, details: dict, ip_address: str = None):
     """Log audit events"""
@@ -247,6 +301,73 @@ def create_refresh_token(data: dict):
     to_encode.update({"exp": expire, "type": "refresh"})
     encoded_jwt = jwt.encode(to_encode, REFRESH_SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
+
+def create_reset_token(email: str) -> str:
+    """Create a password reset token"""
+    token_data = {
+        "email": email,
+        "expires": (datetime.utcnow() + timedelta(minutes=PASSWORD_RESET_TOKEN_EXPIRE_MINUTES)).isoformat(),
+        "used": False
+    }
+    
+    # Generate a secure random token
+    token = str(uuid.uuid4())
+    
+    # Load existing tokens
+    tokens = load_reset_tokens()
+    
+    # Clean up expired tokens
+    now = datetime.utcnow()
+    tokens = {k: v for k, v in tokens.items() if datetime.fromisoformat(v["expires"]) > now}
+    
+    # Add new token
+    tokens[token] = token_data
+    save_reset_tokens(tokens)
+    
+    return token
+
+def verify_reset_token(token: str) -> Optional[str]:
+    """Verify a password reset token and return email if valid"""
+    tokens = load_reset_tokens()
+    
+    if token not in tokens:
+        return None
+    
+    token_data = tokens[token]
+    
+    # Check if token is expired
+    if datetime.fromisoformat(token_data["expires"]) < datetime.utcnow():
+        return None
+    
+    # Check if token is already used
+    if token_data["used"]:
+        return None
+    
+    return token_data["email"]
+
+def invalidate_reset_token(token: str):
+    """Mark a reset token as used"""
+    tokens = load_reset_tokens()
+    if token in tokens:
+        tokens[token]["used"] = True
+        save_reset_tokens(tokens)
+
+def send_password_reset_email(email: str, token: str, background_tasks: BackgroundTasks):
+    """Send password reset email (placeholder - implement with your email service)"""
+    # This is where you'd integrate with your email service
+    # For now, this is a placeholder that logs the token
+    def log_reset_email():
+        print(f"Password reset email for {email}")
+        print(f"Reset token: {token}")
+        print(f"Reset link: https://your-frontend-domain.com/reset-password?token={token}")
+        
+        # Log the reset request
+        log_audit_event("password_reset_requested", email, {
+            "token": token[:8] + "...",  # Only log partial token for security
+            "expires": (datetime.utcnow() + timedelta(minutes=PASSWORD_RESET_TOKEN_EXPIRE_MINUTES)).isoformat()
+        })
+    
+    background_tasks.add_task(log_reset_email)
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """Verify JWT access token"""
@@ -475,6 +596,111 @@ async def logout(current_user: User = Depends(get_current_user), request: Reques
     })
     return StandardResponse(message="Successfully logged out")
 
+@router.post("/auth/forgot-password", response_model=StandardResponse)
+async def forgot_password(
+    request_data: ForgotPasswordRequest, 
+    request: Request,
+    background_tasks: BackgroundTasks
+):
+    """Request password reset"""
+    users = load_users()
+    user_id, user_data = find_user_by_email(users, request_data.email)
+    
+    # Always return success to prevent email enumeration
+    # But only send email if user exists
+    if user_data and user_data["status"] == "Active":
+        # Create reset token
+        reset_token = create_reset_token(request_data.email)
+        
+        # Send reset email
+        send_password_reset_email(request_data.email, reset_token, background_tasks)
+        
+        # Log the request
+        log_audit_event("password_reset_requested", user_id, {
+            "ip_address": get_client_ip(request)
+        })
+    else:
+        # Log failed attempt for non-existent users
+        log_audit_event("password_reset_failed", request_data.email, {
+            "reason": "user_not_found",
+            "ip_address": get_client_ip(request)
+        })
+    
+    return StandardResponse(
+        message="If your email address is registered, you will receive a password reset link shortly."
+    )
+
+@router.post("/auth/reset-password", response_model=StandardResponse)
+async def reset_password(
+    reset_data: ResetPasswordRequest,
+    request: Request
+):
+    """Reset password using token"""
+    # Verify token
+    email = verify_reset_token(reset_data.token)
+    if not email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token"
+        )
+    
+    # Get user
+    users = load_users()
+    user_id, user_data = find_user_by_email(users, email)
+    
+    if not user_data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    if user_data["status"] != "Active":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Account is not active"
+        )
+    
+    # Update password
+    user_data["password"] = hash_password(reset_data.password)
+    user_data["failed_login_attempts"] = 0  # Reset failed attempts
+    user_data["locked_until"] = None  # Unlock account if locked
+    
+    users[user_id] = user_data
+    save_users(users)
+    
+    # Invalidate the reset token
+    invalidate_reset_token(reset_data.token)
+    
+    # Clear any existing login attempts
+    if email in login_attempts:
+        del login_attempts[email]
+    if email in locked_accounts:
+        del locked_accounts[email]
+    
+    # Log password reset
+    log_audit_event("password_reset_completed", user_id, {
+        "ip_address": get_client_ip(request)
+    })
+    
+    return StandardResponse(
+        message="Password successfully reset. You can now log in with your new password."
+    )
+
+@router.get("/auth/verify-reset-token/{token}")
+async def verify_reset_token_endpoint(token: str):
+    """Verify if a reset token is valid (for frontend validation)"""
+    email = verify_reset_token(token)
+    if not email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token"
+        )
+    
+    return {
+        "valid": True,
+        "email": email
+    }
+
 # Admin-Only User Management Routes
 @router.get("/", response_model=List[UserResponse])
 async def get_users(
@@ -592,9 +818,13 @@ async def update_user(
     
     # Log user update
     changes = {}
-    for key, new_value in user_data.items():
-        if key in original_data and original_data[key] != new_value and key != "password":
-            changes[key] = {"from": original_data[key], "to": new_value}
+    for key in ["name", "email", "role", "hotel", "status"]:
+        if key in original_data and key in user_data:
+            if original_data[key] != user_data[key]:
+                changes[key] = {
+                    "old": original_data[key],
+                    "new": user_data[key]
+                }
     
     log_audit_event("user_updated", user_id, {
         "updated_by": current_user.id,
@@ -605,400 +835,291 @@ async def update_user(
     return UserResponse(**user_data, id=user_id)
 
 @router.delete("/{user_id}", response_model=StandardResponse)
-async def delete_user(user_id: str, request: Request, current_user: User = Depends(require_admin)):
-    """Permanently delete a user - ADMIN ONLY"""
+async def delete_user(
+    user_id: str,
+    request: Request,
+    current_user: User = Depends(require_admin)
+):
+    """Delete a user - ADMIN ONLY"""
     users = load_users()
 
     if user_id not in users:
         raise HTTPException(status_code=404, detail="User not found")
-    
-    # Store user info for logging before deletion
-    deleted_user = users[user_id]
 
-    # Actually delete the user from the dictionary
+    # Prevent self-deletion
+    if user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="Cannot delete your own account")
+
+    user_data = users[user_id]
     del users[user_id]
     save_users(users)
     
     # Log user deletion
     log_audit_event("user_deleted", user_id, {
         "deleted_by": current_user.id,
-        "deleted_user_email": deleted_user["email"],
-        "deleted_user_role": deleted_user["role"],
+        "deleted_user_email": user_data["email"],
         "ip_address": get_client_ip(request)
     })
 
     return StandardResponse(message="User deleted successfully")
 
-@router.put("/{user_id}/reset-password", response_model=StandardResponse)
-async def reset_password(
-    user_id: str, 
-    password_data: PasswordReset,
+@router.post("/{user_id}/reset-password", response_model=StandardResponse)
+async def admin_reset_password(
+    user_id: str,
+    password_reset: PasswordReset,
     request: Request,
     current_user: User = Depends(require_admin)
 ):
-    """Reset user password - ADMIN ONLY"""
+    """Admin reset user password - ADMIN ONLY"""
     users = load_users()
 
     if user_id not in users:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Hash new password
-    hashed_password = hash_password(password_data.password)
-    users[user_id]["password"] = hashed_password
-    users[user_id]["failed_login_attempts"] = 0
-    users[user_id]["locked_until"] = None
+    user_data = users[user_id]
+    user_data["password"] = hash_password(password_reset.password)
+    user_data["failed_login_attempts"] = 0
+    user_data["locked_until"] = None
+
+    users[user_id] = user_data
     save_users(users)
     
+    # Clear any existing login attempts for this user
+    user_email = user_data["email"]
+    if user_email in login_attempts:
+        del login_attempts[user_email]
+    if user_email in locked_accounts:
+        del locked_accounts[user_email]
+    
     # Log password reset
-    log_audit_event("password_reset", user_id, {
+    log_audit_event("admin_password_reset", user_id, {
         "reset_by": current_user.id,
-        "target_user_email": users[user_id]["email"],
+        "target_user_email": user_data["email"],
         "ip_address": get_client_ip(request)
     })
 
     return StandardResponse(message="Password reset successfully")
 
-@router.post("/{user_id}/activate", response_model=StandardResponse)
-async def activate_user(user_id: str, request: Request, current_user: User = Depends(require_admin)):
-    """Activate a user - ADMIN ONLY"""
+@router.post("/{user_id}/unlock", response_model=StandardResponse)
+async def unlock_user_account(
+    user_id: str,
+    request: Request,
+    current_user: User = Depends(require_admin)
+):
+    """Unlock a user account - ADMIN ONLY"""
     users = load_users()
 
     if user_id not in users:
         raise HTTPException(status_code=404, detail="User not found")
 
-    users[user_id]["status"] = "Active"
-    users[user_id]["failed_login_attempts"] = 0
-    users[user_id]["locked_until"] = None
+    user_data = users[user_id]
+    user_data["failed_login_attempts"] = 0
+    user_data["locked_until"] = None
+
+    users[user_id] = user_data
     save_users(users)
     
-    # Log user activation
-    log_audit_event("user_activated", user_id, {
-        "activated_by": current_user.id,
-        "user_email": users[user_id]["email"],
+    # Clear login attempts and locked status
+    user_email = user_data["email"]
+    if user_email in login_attempts:
+        del login_attempts[user_email]
+    if user_email in locked_accounts:
+        del locked_accounts[user_email]
+    
+    # Log account unlock
+    log_audit_event("account_unlocked", user_id, {
+        "unlocked_by": current_user.id,
+        "target_user_email": user_data["email"],
         "ip_address": get_client_ip(request)
     })
 
-    return StandardResponse(message="User activated successfully")
+    return StandardResponse(message="Account unlocked successfully")
 
-@router.get("/stats/summary")
-async def get_user_stats(current_user: User = Depends(require_manager_or_admin)):
-    """Get user statistics - MANAGER/ADMIN ONLY"""
-    users = load_users()
-
-    total_users = len(users)
-    active_users = sum(1 for user in users.values() if user["status"] == "Active")
-    inactive_users = total_users - active_users
-
-    # Count by role
-    roles = {}
-    for user in users.values():
-        role = user["role"]
-        roles[role] = roles.get(role, 0) + 1
-
-    # Count by hotel
-    hotels = {}
-    for user in users.values():
-        hotel = user["hotel"]
-        hotels[hotel] = hotels.get(hotel, 0) + 1
-
-    return {
-        "total_users": total_users,
-        "active_users": active_users,
-        "inactive_users": inactive_users,
-        "roles": roles,
-        "hotels": hotels
-    }
-
-@router.get("/me", response_model=UserResponse)
-async def get_me(current_user: User = Depends(get_current_user)):
-    """Get current user profile"""
+# Profile Management Routes (for authenticated users)
+@router.get("/profile/me", response_model=UserResponse)
+async def get_my_profile(current_user: User = Depends(get_current_user)):
+    """Get current user's profile"""
     return UserResponse(**current_user.dict())
 
-# Audit log endpoint for super admins
-@router.get("/audit/logs")
+@router.put("/profile/me", response_model=UserResponse)
+async def update_my_profile(
+    profile_update: UserUpdate,
+    request: Request,
+    current_user: User = Depends(get_current_user)
+):
+    """Update current user's profile (limited fields)"""
+    users = load_users()
+    user_data = users[current_user.id]
+    original_data = user_data.copy()
+
+    # Users can only update certain fields
+    allowed_fields = ["name"]
+    
+    changes = {}
+    if profile_update.name is not None:
+        user_data["name"] = profile_update.name
+        if original_data["name"] != profile_update.name:
+            changes["name"] = {
+                "old": original_data["name"],
+                "new": profile_update.name
+            }
+
+    # Email updates require admin approval or verification
+    if profile_update.email is not None and profile_update.email != user_data["email"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Email updates must be requested through an administrator"
+        )
+
+    # Role and hotel updates require admin privileges
+    if profile_update.role is not None or profile_update.hotel is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Role and hotel updates require administrator privileges"
+        )
+
+    users[current_user.id] = user_data
+    save_users(users)
+    
+    # Log profile update
+    if changes:
+        log_audit_event("profile_updated", current_user.id, {
+            "changes": changes,
+            "ip_address": get_client_ip(request)
+        })
+
+    return UserResponse(**user_data, id=current_user.id)
+
+@router.post("/profile/change-password", response_model=StandardResponse)
+async def change_my_password(
+    current_password: str,
+    new_password: str,
+    request: Request,
+    current_user: User = Depends(get_current_user)
+):
+    """Change current user's password"""
+    users = load_users()
+    user_data = users[current_user.id]
+
+    # Verify current password
+    if not verify_password(current_password, user_data["password"]):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect"
+        )
+
+    # Validate new password strength
+    try:
+        # Use the same validation as PasswordReset model
+        if len(new_password) < MIN_PASSWORD_LENGTH:
+            raise ValueError(f'Password must be at least {MIN_PASSWORD_LENGTH} characters long')
+        
+        if REQUIRE_UPPERCASE and not re.search(r'[A-Z]', new_password):
+            raise ValueError('Password must contain at least one uppercase letter')
+        
+        if REQUIRE_LOWERCASE and not re.search(r'[a-z]', new_password):
+            raise ValueError('Password must contain at least one lowercase letter')
+        
+        if REQUIRE_NUMBERS and not re.search(r'\d', new_password):
+            raise ValueError('Password must contain at least one number')
+        
+        if REQUIRE_SPECIAL_CHARS and not re.search(r'[!@#$%^&*(),.?":{}|<>]', new_password):
+            raise ValueError('Password must contain at least one special character')
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+    # Update password
+    user_data["password"] = hash_password(new_password)
+    users[current_user.id] = user_data
+    save_users(users)
+    
+    # Log password change
+    log_audit_event("password_changed", current_user.id, {
+        "ip_address": get_client_ip(request)
+    })
+
+    return StandardResponse(message="Password changed successfully")
+
+# Utility Routes
+@router.get("/audit-logs", response_model=List[Dict[str, Any]])
 async def get_audit_logs(
     limit: int = 100,
     event_type: Optional[str] = None,
+    user_id: Optional[str] = None,
     current_user: User = Depends(require_admin)
 ):
     """Get audit logs - ADMIN ONLY"""
     try:
         obj = s3.get_object(Bucket=BUCKET_NAME, Key=AUDIT_LOG_KEY)
         logs = json.loads(obj["Body"].read().decode("utf-8"))
-        
-        # Filter by event type if specified
-        if event_type:
-            logs = [log for log in logs if log.get("event_type") == event_type]
-        
-        # Return most recent logs
-        return logs[-limit:]
     except s3.exceptions.NoSuchKey:
         return []
+    except Exception:
+        return []
 
-# Add these new routes to your existing user.py router
-
-from app.services.email_service import email_service, EmailTemplates, PasswordResetManager
-
-# Initialize password reset manager
-reset_manager = PasswordResetManager(s3, BUCKET_NAME)
-
-# Add these new Pydantic models to your existing models:
-
-class ForgotPasswordRequest(BaseModel):
-    email: EmailStr
-    
-    @validator('email')
-    def normalize_email(cls, v):
-        return v.lower().strip()
-
-class ResetPasswordRequest(BaseModel):
-    token: str
-    new_password: str
-    
-    @validator('new_password')
-    def validate_password_strength(cls, v):
-        if len(v) < MIN_PASSWORD_LENGTH:
-            raise ValueError(f'Password must be at least {MIN_PASSWORD_LENGTH} characters long')
-        
-        if REQUIRE_UPPERCASE and not re.search(r'[A-Z]', v):
-            raise ValueError('Password must contain at least one uppercase letter')
-        
-        if REQUIRE_LOWERCASE and not re.search(r'[a-z]', v):
-            raise ValueError('Password must contain at least one lowercase letter')
-        
-        if REQUIRE_NUMBERS and not re.search(r'\d', v):
-            raise ValueError('Password must contain at least one number')
-        
-        if REQUIRE_SPECIAL_CHARS and not re.search(r'[!@#$%^&*(),.?":{}|<>]', v):
-            raise ValueError('Password must contain at least one special character')
-        
-        return v
-
-# Add these new routes to your router:
-
-@router.post("/auth/forgot-password", response_model=StandardResponse)
-async def forgot_password(request_data: ForgotPasswordRequest, request: Request):
-    """Send password reset email"""
-    users = load_users()
-    user_id, user_data = find_user_by_email(users, request_data.email)
-    
-    # Always return success to prevent email enumeration attacks
-    # But only send email if user exists
-    if user_data and user_data.get("status") == "Active":
-        try:
-            # Create reset token
-            reset_token = reset_manager.create_reset_token(user_id, expires_minutes=15)
-            
-            # Build reset URL
-            frontend_url = os.getenv("FRONTEND_URL", "https://jmkfacilities.ie")
-            reset_url = f"{frontend_url}/reset-password?token={reset_token}"
-            
-            # Generate email content
-            html_content, text_content = EmailTemplates.password_reset_template(
-                reset_link=reset_url,
-                user_name=user_data["name"],
-                expires_minutes=15
-            )
-            
-            # Send email
-            email_sent = await email_service.send_email(
-                to_emails=[user_data["email"]],
-                subject="Password Reset Request - JMK Facilities",
-                html_content=html_content,
-                text_content=text_content
-            )
-            
-            if email_sent:
-                # Log password reset request
-                log_audit_event("password_reset_requested", user_id, {
-                    "email": user_data["email"],
-                    "ip_address": get_client_ip(request),
-                    "reset_token_created": True
-                })
-            else:
-                logger.error(f"Failed to send password reset email to {user_data['email']}")
-                
-        except Exception as e:
-            logger.error(f"Error in forgot password process: {str(e)}")
-    
-    # Always return success message
-    return StandardResponse(
-        message="If your email address is registered, you will receive a password reset link shortly."
-    )
-
-@router.post("/auth/reset-password", response_model=StandardResponse)
-async def reset_password_with_token(request_data: ResetPasswordRequest, request: Request):
-    """Reset password using reset token"""
-    
-    # Validate and consume token
-    user_id = reset_manager.consume_reset_token(request_data.token)
-    
-    if not user_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid or expired reset token"
-        )
-    
-    # Load users and update password
-    users = load_users()
-    
-    if user_id not in users:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
-    
-    # Hash new password and update user
-    hashed_password = hash_password(request_data.new_password)
-    users[user_id]["password"] = hashed_password
-    users[user_id]["failed_login_attempts"] = 0
-    users[user_id]["locked_until"] = None
-    
-    save_users(users)
-    
-    # Log password reset completion
-    log_audit_event("password_reset_completed", user_id, {
-        "email": users[user_id]["email"],
-        "ip_address": get_client_ip(request),
-        "reset_via_token": True
-    })
-    
-    return StandardResponse(message="Password reset successfully. You can now login with your new password.")
-
-@router.post("/auth/send-welcome-email/{user_id}", response_model=StandardResponse)
-async def send_welcome_email(user_id: str, current_user: User = Depends(require_admin)):
-    """Send welcome email to new user - ADMIN ONLY"""
-    users = load_users()
-    
-    if user_id not in users:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    user_data = users[user_id]
-    
-    try:
-        # Build login URL
-        frontend_url = os.getenv("FRONTEND_URL", "https://jmkfacilities.ie")
-        login_url = f"{frontend_url}/login"
-        
-        # Generate welcome email
-        html_content, text_content = EmailTemplates.welcome_email_template(
-            user_name=user_data["name"],
-            user_email=user_data["email"],
-            login_url=login_url
-        )
-        
-        # Send email
-        email_sent = await email_service.send_email(
-            to_emails=[user_data["email"]],
-            subject="Welcome to JMK Facilities Management System",
-            html_content=html_content,
-            text_content=text_content
-        )
-        
-        if email_sent:
-            log_audit_event("welcome_email_sent", user_id, {
-                "sent_by": current_user.id,
-                "recipient_email": user_data["email"]
-            })
-            return StandardResponse(message="Welcome email sent successfully")
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to send welcome email"
-            )
-            
-    except Exception as e:
-        logger.error(f"Error sending welcome email: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to send welcome email"
-        )
-
-@router.get("/auth/verify-reset-token/{token}", response_model=StandardResponse)
-async def verify_reset_token(token: str):
-    """Verify if a reset token is valid (for frontend validation)"""
-    user_id = reset_manager.validate_reset_token(token)
-    
+    # Apply filters
+    filtered_logs = logs
+    if event_type:
+        filtered_logs = [log for log in filtered_logs if log.get("event_type") == event_type]
     if user_id:
-        return StandardResponse(message="Token is valid")
-    else:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid or expired token"
-        )
+        filtered_logs = [log for log in filtered_logs if log.get("user_id") == user_id]
 
-# Enhanced user creation with optional welcome email
-@router.post("/", response_model=UserResponse)
-async def create_user_enhanced(
-    user_create: UserCreate, 
-    request: Request, 
-    send_welcome_email: bool = False,
-    current_user: User = Depends(require_admin)
-):
-    """Create a new user with optional welcome email - ADMIN ONLY"""
+    # Sort by timestamp (newest first) and limit
+    filtered_logs.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+    return filtered_logs[:limit]
+
+@router.get("/stats", response_model=Dict[str, Any])
+async def get_user_stats(current_user: User = Depends(require_admin)):
+    """Get user statistics - ADMIN ONLY"""
     users = load_users()
-
-    # Check if email already exists
-    existing_user_id, existing_user_data = find_user_by_email(users, user_create.email)
-    if existing_user_data:
-        raise HTTPException(status_code=400, detail="Email already registered")
-
-    # Create new user
-    user_id = str(uuid.uuid4())
-    hashed_password = hash_password(user_create.password)
-
-    new_user = {
-        "name": user_create.name,
-        "email": user_create.email,
-        "role": user_create.role,
-        "hotel": user_create.hotel,
-        "password": hashed_password,
-        "status": "Active",
-        "created_at": datetime.utcnow().isoformat(),
-        "last_login": None,
-        "failed_login_attempts": 0,
-        "locked_until": None
-    }
-
-    users[user_id] = new_user
-    save_users(users)
     
-    # Log user creation
-    log_audit_event("user_created", user_id, {
-        "created_by": current_user.id,
-        "user_email": user_create.email,
-        "user_role": user_create.role,
-        "ip_address": get_client_ip(request),
-        "welcome_email_requested": send_welcome_email
-    })
+    stats = {
+        "total_users": len(users),
+        "active_users": sum(1 for user in users.values() if user["status"] == "Active"),
+        "inactive_users": sum(1 for user in users.values() if user["status"] != "Active"),
+        "users_by_role": {},
+        "users_by_hotel": {},
+        "users_with_recent_login": 0
+    }
+    
+    # Count by role and hotel
+    for user_data in users.values():
+        role = user_data.get("role", "Unknown")
+        hotel = user_data.get("hotel", "Unknown")
+        
+        stats["users_by_role"][role] = stats["users_by_role"].get(role, 0) + 1
+        stats["users_by_hotel"][hotel] = stats["users_by_hotel"].get(hotel, 0) + 1
+        
+        # Check for recent login (last 30 days)
+        if user_data.get("last_login"):
+            try:
+                last_login = datetime.fromisoformat(user_data["last_login"])
+                if (datetime.utcnow() - last_login).days <= 30:
+                    stats["users_with_recent_login"] += 1
+            except:
+                pass
+    
+    return stats
 
-    # Send welcome email if requested
-    if send_welcome_email:
-        try:
-            frontend_url = os.getenv("FRONTEND_URL", "https://jmkfacilities.ie")
-            login_url = f"{frontend_url}/login"
-            
-            html_content, text_content = EmailTemplates.welcome_email_template(
-                user_name=new_user["name"],
-                user_email=new_user["email"],
-                login_url=login_url
-            )
-            
-            await email_service.send_email(
-                to_emails=[new_user["email"]],
-                subject="Welcome to JMK Facilities Management System",
-                html_content=html_content,
-                text_content=text_content
-            )
-            
-            log_audit_event("welcome_email_sent", user_id, {
-                "sent_by": current_user.id,
-                "recipient_email": new_user["email"],
-                "sent_during_creation": True
-            })
-            
-        except Exception as e:
-            logger.error(f"Failed to send welcome email during user creation: {str(e)}")
-            # Don't fail user creation if email fails
-
-    return UserResponse(**new_user, id=user_id)
+@router.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    try:
+        # Test S3 connectivity
+        s3.head_bucket(Bucket=BUCKET_NAME)
+        return {
+            "status": "healthy",
+            "timestamp": datetime.utcnow().isoformat(),
+            "services": {
+                "s3": "connected",
+                "authentication": "operational"
+            }
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Service unhealthy: {str(e)}"
+        )
