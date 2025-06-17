@@ -172,7 +172,7 @@ def generate_grid_data(confirmations: Dict[str, Any], frequency: str, start_date
         return {"boxes": [], "layout": {"cols": 1, "rows": 1}}
 
 def generate_daily_grid(confirmations: Dict[str, Any], start_date: datetime, end_date: datetime, today: date) -> Dict[str, Any]:
-    """Generate daily confirmation grid (calendar style)"""
+    """Generate daily confirmation grid (calendar style) - Always shows all boxes"""
     boxes = []
     current = start_date.date()
     
@@ -180,8 +180,9 @@ def generate_daily_grid(confirmations: Dict[str, Any], start_date: datetime, end
         date_key = current.strftime("%Y-%m-%d")
         box_data = {
             "date": current.strftime("%d"),
+            "month": current.strftime("%b"),
             "full_date": date_key,
-            "status": "pending"
+            "status": "empty"  # Default to empty, not pending
         }
         
         if date_key in confirmations:
@@ -192,19 +193,21 @@ def generate_daily_grid(confirmations: Dict[str, Any], start_date: datetime, end
             })
         elif current > today:
             box_data["status"] = "future"
-        elif current < today:
-            box_data["status"] = "missing"
+        elif current <= today:
+            box_data["status"] = "empty"  # Show as empty box to be filled
             
         boxes.append(box_data)
         current += timedelta(days=1)
     
     return {
         "boxes": boxes,
-        "layout": {"cols": 31, "rows": 12}  # Calendar style
+        "layout": {"cols": 31, "rows": 12},  # Calendar style
+        "total_expected": len(boxes),
+        "completed_count": len([b for b in boxes if b["status"] == "completed"])
     }
 
 def generate_weekly_grid(confirmations: Dict[str, Any], start_date: datetime, end_date: datetime, today: date) -> Dict[str, Any]:
-    """Generate weekly confirmation grid"""
+    """Generate weekly confirmation grid - Always shows all expected weeks"""
     boxes = []
     current = start_date.date()
     week_num = 1
@@ -222,7 +225,7 @@ def generate_weekly_grid(confirmations: Dict[str, Any], start_date: datetime, en
         box_data = {
             "week": f"W{week_num}",
             "date_range": f"{week_start.strftime('%d/%m')}-{week_end.strftime('%d/%m')}",
-            "status": "pending"
+            "status": "empty"  # Default to empty
         }
         
         if week_confirmations:
@@ -232,10 +235,10 @@ def generate_weekly_grid(confirmations: Dict[str, Any], start_date: datetime, en
                 "initials": latest_conf["confirmed_by"][:2].upper(),
                 "confirmed_date": latest_conf["date"]
             })
-        elif week_end < today:
-            box_data["status"] = "missing"
-        elif week_start > today:
+        elif week_end > today:
             box_data["status"] = "future"
+        else:
+            box_data["status"] = "empty"  # Show empty box to be filled
             
         boxes.append(box_data)
         current = week_end + timedelta(days=1)
@@ -243,11 +246,13 @@ def generate_weekly_grid(confirmations: Dict[str, Any], start_date: datetime, en
     
     return {
         "boxes": boxes,
-        "layout": {"cols": 13, "rows": 4}
+        "layout": {"cols": 13, "rows": 4},
+        "total_expected": len(boxes),
+        "completed_count": len([b for b in boxes if b["status"] == "completed"])
     }
 
 def generate_monthly_grid(confirmations: Dict[str, Any], start_date: datetime, end_date: datetime, today: date) -> Dict[str, Any]:
-    """Generate monthly confirmation grid"""
+    """Generate monthly confirmation grid - Always shows all expected months"""
     boxes = []
     current = start_date.replace(day=1)
     
@@ -261,7 +266,8 @@ def generate_monthly_grid(confirmations: Dict[str, Any], start_date: datetime, e
         box_data = {
             "month": current.strftime("%b"),
             "year": current.strftime("%Y"),
-            "status": "pending"
+            "month_year": current.strftime("%b %Y"),
+            "status": "empty"  # Default to empty
         }
         
         if month_confirmations:
@@ -271,10 +277,10 @@ def generate_monthly_grid(confirmations: Dict[str, Any], start_date: datetime, e
                 "initials": latest_conf["confirmed_by"][:2].upper(),
                 "confirmed_date": latest_conf["date"]
             })
-        elif current.date() < today.replace(day=1):
-            box_data["status"] = "missing"
         elif current.date() > today.replace(day=1):
             box_data["status"] = "future"
+        else:
+            box_data["status"] = "empty"  # Show empty box to be filled
             
         boxes.append(box_data)
         
@@ -286,7 +292,9 @@ def generate_monthly_grid(confirmations: Dict[str, Any], start_date: datetime, e
     
     return {
         "boxes": boxes,
-        "layout": {"cols": 12, "rows": 1}
+        "layout": {"cols": 12, "rows": 1},
+        "total_expected": len(boxes),
+        "completed_count": len([b for b in boxes if b["status"] == "completed"])
     }
 
 def check_incomplete_data(tasks: List[Dict], start_date: datetime, end_date: datetime) -> bool:
