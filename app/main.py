@@ -21,6 +21,7 @@ from app.routers import (
     confirmations,
     compliance_tasks,
     audit,
+    pdf_generator,      # <-- NEW PDF Generator Router
     user,               # User management
     hotel_facilities    # Hotel facilities management
 )
@@ -32,6 +33,7 @@ openapi_tags = [
     {"name": "users", "description": "User management (create, list, edit, etc.)"},
     {"name": "hotels", "description": "Endpoints for hotel facilities and meta."},
     {"name": "compliance", "description": "Compliance checks, uploads, and scoring."},
+    {"name": "audit-reports", "description": "PDF audit report generation and preview."},  # <-- NEW
     # Add other tag descriptions as needed
 ]
 
@@ -90,7 +92,7 @@ async def create_admin_user():
 # --- ROUTERS (all with tags/prefixes for nice docs) ---
 
 app.include_router(utilities.router, prefix="/utilities", tags=["utilities"])
-app.include_router(water.router, prefix="/water", tags=["water"])           # <--- NEW!
+app.include_router(water.router, prefix="/water", tags=["water"])           
 app.include_router(tenders.router)
 app.include_router(drawings.router)
 app.include_router(compliance.router, prefix="/compliance", tags=["compliance"])
@@ -102,6 +104,7 @@ app.include_router(compliance_leaderboard.router, prefix="/api/compliance", tags
 app.include_router(confirmations.router, prefix="/api/compliance", tags=["compliance"])
 app.include_router(compliance_tasks.router, prefix="/api/compliance", tags=["compliance"])
 app.include_router(audit.router, prefix="/api/compliance", tags=["compliance"])
+app.include_router(pdf_generator.router, prefix="/api", tags=["audit-reports"])  # <-- NEW PDF Router
 app.include_router(user.router, prefix="/api/users", tags=["users"])
 app.include_router(hotel_facilities.router, prefix="/api/hotels", tags=["hotels"])
 
@@ -113,4 +116,3 @@ def read_root():
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
-
