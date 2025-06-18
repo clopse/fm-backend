@@ -354,21 +354,6 @@ def invalidate_reset_token(token: str):
         save_reset_tokens(tokens)
 
 def send_password_reset_email(email: str, token: str, background_tasks: BackgroundTasks):
-    """Send password reset email (placeholder - implement with your email service)"""
-    # This is where you'd integrate with your email service
-    # For now, this is a placeholder that logs the token
-    def log_reset_email():
-        print(f"Password reset email for {email}")
-        print(f"Reset token: {token}")
-        print(f"Reset link: https://your-frontend-domain.com/reset-password?token={token}")
-        
-        # Log the reset request
-        log_audit_event("password_reset_requested", email, {
-            "token": token[:8] + "...",  # Only log partial token for security
-            "expires": (datetime.utcnow() + timedelta(minutes=PASSWORD_RESET_TOKEN_EXPIRE_MINUTES)).isoformat()
-        })
-
-def send_password_reset_email(email: str, token: str, background_tasks: BackgroundTasks):
     """Send password reset email via real SMTP"""
     reset_link = f"https://jmkfacilities.ie/reset-password?token={token}"
     html, text = EmailTemplates.password_reset_template(
