@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Request, Depends, status, Backgrou
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr, validator
 from typing import Optional, List, Dict, Any
+from app.services.email_service import email_service, EmailTemplates
 import json
 import boto3
 import bcrypt
@@ -366,8 +367,29 @@ def send_password_reset_email(email: str, token: str, background_tasks: Backgrou
             "token": token[:8] + "...",  # Only log partial token for security
             "expires": (datetime.utcnow() + timedelta(minutes=PASSWORD_RESET_TOKEN_EXPIRE_MINUTES)).isoformat()
         })
+
+def send_password_reset_email(email: str, token: str, background_tasks: BackgroundTasks):
+    """Send password reset email via real SMTP"""
+    reset_link = f"https://jmkfacilities.ie/reset-password?token={token}"
+    html, text = EmailTemplates.password_reset_template(
+        reset_link=reset_link,
+        user_name=email.split("@")[0],  # crude fallback for name
+        expires_minutes=PASSWORD_RESET_TOKEN_EXPIRE_MINUTES
+    )
+
+    background_tasks.add_task(
+        email_service.send_email,
+        to_emails=[email],
+        subject="Reset your JMK Facilities password",
+        html_content=html,
+        text_content=text
+    )
+
+    log_audit_event("password_reset_requested", email, {
+        "token": token[:8] + "...",
+        "expires": (datetime.utcnow() + timedelta(minutes=PASSWORD_RESET_TOKEN_EXPIRE_MINUTES)).isoformat()
+    })
     
-    background_tasks.add_task(log_reset_email)
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """Verify JWT access token"""
