@@ -223,10 +223,16 @@ class SmartBillExtractor:
         patterns = {}
         text_lower = text.lower()
         
+        # Detect billing period from summary headers
+        billing_period = self._detect_billing_period(text, supplier)
+        if billing_period:
+            patterns['billing_period'] = billing_period
+        
         if "flogas" in supplier.lower():
             patterns['carbon_tax'] = 'carbon tax' in text_lower
             patterns['standing_charge'] = 'standing charge' in text_lower
             patterns['commodity_tariff'] = 'commodity tariff' in text_lower
+            patterns['flogas_style'] = True
         
         if "arden" in supplier.lower():
             patterns['day_units'] = 'day units' in text_lower
@@ -234,6 +240,77 @@ class SmartBillExtractor:
             patterns['mic_charge'] = 'mic' in text_lower
         
         return patterns
+    
+    def _detect_billing_period(self, text: str, supplier: str) -> Optional[Dict]:
+        """Smart billing period detection from summary headers"""
+        
+        # Look for "Summary Invoice" followed by month/year
+        summary_patterns = [
+            r'summary invoice\s+(\w+\s+\d{4})',
+            r'invoice\s+summary\s+(\w+\s+\d{4})',
+            r'billing period\s*:?\s*(\w+\s+\d{4})',
+            r'period\s*:?\s*(\w+\s+\d{4})'
+        ]
+        
+        for pattern in summary_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                period_str = match.group(1).strip()
+                
+                # Parse month and year
+                try:
+                    period_date = datetime.strptime(period_str, '%B %Y')
+                    
+                    # Calculate start and end dates for the month
+                    start_date = period_date.replace(day=1)
+                    
+                    # Get last day of month
+                    last_day = calendar.monthrange(period_date.year, period_date.month)[1]
+                    end_date = period_date.replace(day=last_day)
+                    
+                    return {
+                        'detected_period': period_str,
+                        'start_date': start_date.strftime('%Y-%m-%d'),
+                        'end_date': end_date.strftime('%Y-%m-%d'),
+                        'source': 'summary_header',
+                        'confidence': 95
+                    }
+                    
+                except ValueError:
+                    # Try alternative format like "Sept 2024"
+                    try:
+                        # Handle abbreviated months
+                        month_mapping = {
+                            'jan': 'January', 'feb': 'February', 'mar': 'March',
+                            'apr': 'April', 'may': 'May', 'jun': 'June',
+                            'jul': 'July', 'aug': 'August', 'sep': 'September',
+                            'sept': 'September', 'oct': 'October', 'nov': 'November', 'dec': 'December'
+                        }
+                        
+                        parts = period_str.lower().split()
+                        if len(parts) == 2:
+                            month_abbr = parts[0]
+                            year = int(parts[1])
+                            
+                            if month_abbr in month_mapping:
+                                full_month = month_mapping[month_abbr]
+                                period_date = datetime.strptime(f"{full_month} {year}", '%B %Y')
+                                
+                                start_date = period_date.replace(day=1)
+                                last_day = calendar.monthrange(period_date.year, period_date.month)[1]
+                                end_date = period_date.replace(day=last_day)
+                                
+                                return {
+                                    'detected_period': period_str,
+                                    'start_date': start_date.strftime('%Y-%m-%d'),
+                                    'end_date': end_date.strftime('%Y-%m-%d'),
+                                    'source': 'summary_header_abbrev',
+                                    'confidence': 90
+                                }
+                    except ValueError:
+                        continue
+        
+        return None
     
     def _identify_field_candidates(self, text: str, tables: List, bill_type: str) -> Dict:
         """Pre-identify likely field values"""
@@ -325,31 +402,54 @@ class SmartBillExtractor:
         
         base_schema = self._get_exact_schema(bill_type)
         
+        # Include billing period intelligence if detected
+        billing_period_guidance = ""
+        if 'billing_period' in pdf_intelligence.get('bill_patterns', {}):
+            bp = pdf_intelligence['bill_patterns']['billing_period']
+            billing_period_guidance = f"""
+        
+        CRITICAL BILLING PERIOD INTELLIGENCE:
+        - Detected billing period: {bp['detected_period']}
+        - Calculated start date: {bp['start_date']}
+        - Calculated end date: {bp['end_date']}
+        - Source: {bp['source']} (confidence: {bp['confidence']}%)
+        
+        ⚠️  IMPORTANT: Use the DETECTED billing period dates above, NOT the meter reading dates.
+        Meter reading dates are often from previous periods for reconciliation purposes.
+        """
+        
         intelligence_context = f"""
         CONTEXT FROM PDF ANALYSIS:
         - Supplier detected: {pdf_intelligence.get('supplier_detected', 'Unknown')}
         - Numbers found in PDF: {pdf_intelligence.get('all_numbers', [])[:30]}
         - Table structures found: {len(pdf_intelligence.get('tables', []))}
+        {billing_period_guidance}
         """
         
         precision_instructions = """
         CRITICAL PRECISION REQUIREMENTS:
         
-        1. DECIMAL PRECISION: Pay extreme attention to decimal places
+        1. BILLING PERIOD PRIORITY:
+           - Use detected billing period dates from summary headers
+           - Do NOT use meter reading dates for billing period
+           - Meter readings are for consumption calculation only
+        
+        2. DECIMAL PRECISION: Pay extreme attention to decimal places
            - Rate 0.048700 is NOT the same as 0.48700
            - Be very careful with rates - they're often small decimals
         
-        2. DATE PRECISION: 
+        3. DATE PRECISION: 
            - Always use YYYY-MM-DD format
-           - "July 2024" becomes "2024-07-01" to "2024-07-31"
+           - "September 2024" becomes "2024-09-01" to "2024-09-30"
         
-        3. CONSUMPTION PRECISION:
-           - Day/Night/Wattless must be exact integers
-           - Double-check consumption totals add up
+        4. CONSUMPTION vs BILLING PERIODS:
+           - Billing period = what the bill covers (from summary)
+           - Meter readings = physical readings for calculation
+           - These are often different periods!
         
-        4. VAT CALCULATIONS:
+        5. VAT CALCULATIONS:
            - Ireland electricity VAT = 9%
-           - Ireland gas VAT = 13.5% 
+           - Ireland gas VAT = 13.5% (but Flogas often shows 9%)
         """
         
         return f"""
@@ -362,7 +462,7 @@ class SmartBillExtractor:
         
         {precision_instructions}
         
-        Extract with absolute precision.
+        Extract with absolute precision. Pay special attention to billing period detection.
         """
     
     def _get_exact_schema(self, bill_type: str) -> str:
@@ -657,9 +757,38 @@ class SmartBillExtractor:
         return data
     
     def _validate_gas_simple(self, data: Dict, pdf_intelligence: Dict) -> Dict:
-        """Simple gas validation"""
+        """Simple gas validation with billing period correction"""
         try:
-            # Basic validation
+            # Check if we have billing period intelligence
+            bill_patterns = pdf_intelligence.get('bill_patterns', {})
+            if 'billing_period' in bill_patterns:
+                bp = bill_patterns['billing_period']
+                
+                # Correct billing period if detected
+                bill_summary = data.get("billSummary", {})
+                original_start = bill_summary.get("billingPeriodStartDate")
+                original_end = bill_summary.get("billingPeriodEndDate")
+                
+                if original_start != bp['start_date'] or original_end != bp['end_date']:
+                    print(f"🔧 Correcting billing period:")
+                    print(f"   Original: {original_start} to {original_end}")
+                    print(f"   Corrected: {bp['start_date']} to {bp['end_date']} (from '{bp['detected_period']}')")
+                    
+                    bill_summary["billingPeriodStartDate"] = bp['start_date']
+                    bill_summary["billingPeriodEndDate"] = bp['end_date']
+                    
+                    # Add to validation corrections
+                    if "_validation" not in data:
+                        data["_validation"] = {"corrections": []}
+                    
+                    data["_validation"]["corrections"].append({
+                        "field": "billingPeriod",
+                        "original": f"{original_start} to {original_end}",
+                        "corrected": f"{bp['start_date']} to {bp['end_date']}",
+                        "reason": f"Detected from summary header: '{bp['detected_period']}'"
+                    })
+            
+            # Basic total validation
             bill_summary = data.get("billSummary", {})
             total_amount = bill_summary.get("currentBillAmount", 0)
             
