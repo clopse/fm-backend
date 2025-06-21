@@ -19,7 +19,7 @@ router = APIRouter()
 
 DOCUPIPE_API_KEY = os.getenv("DOCUPIPE_API_KEY")
 SCHEMA_ELECTRICITY = "3ca991a9"
-SCHEMA_GAS = "33093b4d"
+SCHEMA_GAS = "0804d026"
 UPLOAD_WEBHOOK_URL = os.getenv("UPLOAD_WEBHOOK_URL")
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "jmk-project-uploads")
 
