@@ -63,7 +63,8 @@ class SmartBillExtractor:
             "tables": [],
             "supplier_detected": "Unknown",
             "bill_patterns": {},
-            "field_candidates": {}
+            "field_candidates": {},
+            "bill_classification": {}
         }
         
         try:
@@ -95,6 +96,9 @@ class SmartBillExtractor:
                 # Advanced supplier detection
                 analysis['supplier_detected'] = self._advanced_supplier_detection(full_text)
                 
+                # Classify the bill type (normal vs edge case)
+                analysis['bill_classification'] = self._classify_bill_type(full_text, all_tables)
+                
                 # Extract all numbers with precise context
                 analysis.update(self._extract_numbers_with_precision(full_text))
                 
@@ -108,6 +112,95 @@ class SmartBillExtractor:
             print(f"PDF analysis error: {e}")
         
         return analysis
+    
+    def _classify_bill_type(self, text: str, tables: List) -> Dict:
+        """Classify if this is a normal bill or edge case"""
+        
+        classification = {
+            "type": "normal",
+            "confidence": 80,
+            "flags": [],
+            "recommendation": "process_normally"
+        }
+        
+        text_lower = text.lower()
+        
+        # Check for edge case indicators
+        edge_flags = []
+        
+        # 1. Very short billing period (< 7 days)
+        billing_period_match = re.search(r'billing period\s+(\d{1,2})/(\d{1,2})/(\d{2,4})\s*-\s*(\d{1,2})/(\d{1,2})/(\d{2,4})', text_lower)
+        if billing_period_match:
+            try:
+                from datetime import datetime
+                start_day, start_month, start_year = billing_period_match.groups()[:3]
+                end_day, end_month, end_year = billing_period_match.groups()[3:]
+                
+                # Handle 2-digit years
+                if len(start_year) == 2:
+                    start_year = f"20{start_year}"
+                if len(end_year) == 2:
+                    end_year = f"20{end_year}"
+                
+                start_date = datetime.strptime(f"{start_day}/{start_month}/{start_year}", "%d/%m/%Y")
+                end_date = datetime.strptime(f"{end_day}/{end_month}/{end_year}", "%d/%m/%Y")
+                
+                period_days = (end_date - start_date).days
+                
+                if period_days < 7:
+                    edge_flags.append(f"short_period_{period_days}_days")
+                
+            except ValueError:
+                pass
+        
+        # 2. Missing detailed consumption breakdown
+        has_consumption_table = any('consumption' in str(table).lower() for table in tables)
+        has_charge_breakdown = any(any('charge' in str(row).lower() for row in table.get('raw_table', [])) for table in tables)
+        
+        if not has_consumption_table and not has_charge_breakdown:
+            edge_flags.append("missing_detailed_breakdown")
+        
+        # 3. Summary/payment slip indicators
+        payment_slip_indicators = ['payment slip', 'total due', 'transaction date', 'payment method']
+        if sum(1 for indicator in payment_slip_indicators if indicator in text_lower) >= 3:
+            edge_flags.append("payment_slip_format")
+        
+        # 4. Adjustment/reconciliation bill
+        adjustment_indicators = ['adjustment', 'reconciliation', 'catch-up', 'final bill', 'balance']
+        if any(indicator in text_lower for indicator in adjustment_indicators):
+            edge_flags.append("adjustment_bill")
+        
+        # 5. Very high amount for short period
+        if 'short_period' in str(edge_flags) and any(num > 2000 for num in self._extract_numbers_simple(text)):
+            edge_flags.append("high_amount_short_period")
+        
+        # Classify based on flags
+        if len(edge_flags) >= 2:
+            classification["type"] = "edge_case"
+            classification["confidence"] = 90
+            classification["recommendation"] = "manual_review"
+        elif len(edge_flags) == 1:
+            classification["type"] = "suspicious"
+            classification["confidence"] = 70
+            classification["recommendation"] = "validate_carefully"
+        
+        classification["flags"] = edge_flags
+        
+        return classification
+    
+    def _extract_numbers_simple(self, text: str) -> List[float]:
+        """Simple number extraction for classification"""
+        numbers = []
+        for match in re.finditer(r'[\d,]+\.?\d*', text):
+            try:
+                clean_num = re.sub(r'[,]', '', match.group())
+                if '.' in clean_num:
+                    numbers.append(float(clean_num))
+                else:
+                    numbers.append(float(clean_num))
+            except ValueError:
+                continue
+        return numbers
     
     def _advanced_supplier_detection(self, text: str) -> str:
         """Advanced supplier detection with confidence"""
@@ -719,25 +812,185 @@ class SmartBillExtractor:
         """
     
     def _smart_validation(self, claude_data: Dict, pdf_intelligence: Dict, bill_type: str) -> Dict:
-        """Smart validation and correction using PDF cross-reference"""
+        """Fail-safe validation - ensure bill always saves successfully"""
         
         try:
-            # Simple validation with math checking
-            if bill_type == "electricity":
+            # Check if this is an edge case bill
+            bill_classification = pdf_intelligence.get('bill_classification', {})
+            
+            if bill_classification.get('type') == 'edge_case':
+                print(f"🚨 Edge case bill detected: {bill_classification.get('flags', [])}")
+                print("📝 Using safe extraction with nulls for frontend editing")
+                claude_data = self._make_bill_safe_for_saving(claude_data, bill_type)
+            
+            # Normal validation for regular bills  
+            elif bill_type == "electricity":
                 claude_data = self._validate_electricity_simple(claude_data, pdf_intelligence)
             else:
                 claude_data = self._validate_gas_simple(claude_data, pdf_intelligence)
             
+            # ALWAYS ensure the bill can be saved
+            claude_data = self._ensure_bill_completeness(claude_data, bill_type)
+            
             claude_data["_validation"] = {
-                "corrections": [],
-                "confidence_score": 85,  # Default good confidence
-                "validation_method": "smart_validation"
+                "corrections": claude_data.get("_validation", {}).get("corrections", []),
+                "confidence_score": 85 if bill_classification.get('type') != 'edge_case' else 25,
+                "validation_method": "fail_safe_validation",
+                "bill_classification": bill_classification,
+                "requires_frontend_editing": bill_classification.get('type') == 'edge_case'
             }
             
         except Exception as e:
-            claude_data["_validation"] = {"error": f"Validation failed: {e}", "confidence_score": 50}
+            print(f"⚠️ Validation error: {e}, creating safe fallback")
+            claude_data = self._create_safe_fallback_bill(bill_type)
         
         return claude_data
+    
+    def _make_bill_safe_for_saving(self, data: Dict, bill_type: str) -> Dict:
+        """Make edge case bills safe by filling in required fields with nulls/zeros"""
+        
+        if bill_type == "gas":
+            # Ensure all required gas bill fields exist
+            safe_data = {
+                "documentType": "Natural Gas Bill",
+                "supplierInfo": {
+                    "name": data.get("supplierInfo", {}).get("name", "Unknown"),
+                    "vatRegNo": data.get("supplierInfo", {}).get("vatRegNo", None),
+                    "phoneNumber": data.get("supplierInfo", {}).get("phoneNumber", None),
+                    "email": data.get("supplierInfo", {}).get("email", None),
+                    "address": {
+                        "street": data.get("supplierInfo", {}).get("address", {}).get("street", None),
+                        "city": data.get("supplierInfo", {}).get("address", {}).get("city", None),
+                        "postalCode": data.get("supplierInfo", {}).get("address", {}).get("postalCode", None)
+                    }
+                },
+                "customerInfo": {
+                    "name": data.get("customerInfo", {}).get("name", "Unknown"),
+                    "address": {
+                        "street": data.get("customerInfo", {}).get("address", {}).get("street", None),
+                        "city": data.get("customerInfo", {}).get("address", {}).get("city", None),
+                        "postalCode": data.get("customerInfo", {}).get("address", {}).get("postalCode", None)
+                    },
+                    "contactNumber": data.get("customerInfo", {}).get("contactNumber", None)
+                },
+                "accountInfo": {
+                    "accountNumber": data.get("accountInfo", {}).get("accountNumber", "Unknown"),
+                    "gprn": data.get("accountInfo", {}).get("gprn", None),
+                    "meterNumber": data.get("accountInfo", {}).get("meterNumber", None),
+                    "tariffCategory": data.get("accountInfo", {}).get("tariffCategory", None),
+                    "paymentMethod": data.get("accountInfo", {}).get("paymentMethod", None)
+                },
+                "billSummary": {
+                    "invoiceNumber": data.get("billSummary", {}).get("invoiceNumber", "Unknown"),
+                    "issueDate": data.get("billSummary", {}).get("issueDate", "1900-01-01"),
+                    "dueDate": data.get("billSummary", {}).get("dueDate", "1900-01-01"),
+                    "billingPeriodStartDate": data.get("billSummary", {}).get("billingPeriodStartDate", "1900-01-01"),
+                    "billingPeriodEndDate": data.get("billSummary", {}).get("billingPeriodEndDate", "1900-01-01"),
+                    "lastBillAmount": data.get("billSummary", {}).get("lastBillAmount", 0),
+                    "paymentReceivedAmount": data.get("billSummary", {}).get("paymentReceivedAmount", 0),
+                    "balanceBroughtForward": data.get("billSummary", {}).get("balanceBroughtForward", 0),
+                    "netBillAmount": data.get("billSummary", {}).get("netBillAmount", 0),
+                    "totalVatAmount": data.get("billSummary", {}).get("totalVatAmount", 0),
+                    "currentBillAmount": data.get("billSummary", {}).get("currentBillAmount", 0),
+                    "totalDueAmount": data.get("billSummary", {}).get("totalDueAmount", 0)
+                },
+                "meterReadings": {
+                    "previousReading": data.get("meterReadings", {}).get("previousReading", None),
+                    "presentReading": data.get("meterReadings", {}).get("presentReading", None),
+                    "unitsConsumed": data.get("meterReadings", {}).get("unitsConsumed", 0)
+                },
+                "consumptionDetails": {
+                    "consumptionValue": data.get("consumptionDetails", {}).get("consumptionValue", 0),
+                    "consumptionUnit": "kWh",
+                    "calibrationValue": data.get("consumptionDetails", {}).get("calibrationValue", None),
+                    "conversionFactor": data.get("consumptionDetails", {}).get("conversionFactor", None),
+                    "correctionFactor": data.get("consumptionDetails", {}).get("correctionFactor", None)
+                },
+                "lineItems": data.get("lineItems", [])
+            }
+            
+            return safe_data
+        
+        else:  # electricity
+            # Add similar fail-safe structure for electricity
+            return data
+    
+    def _ensure_bill_completeness(self, data: Dict, bill_type: str) -> Dict:
+        """Ensure ALL required fields exist to prevent save failures"""
+        
+        if bill_type == "gas":
+            # Check and fill any missing required fields
+            if not data.get("billSummary", {}).get("currentBillAmount"):
+                # Try to extract any total amount from the data
+                total_candidates = [
+                    data.get("billSummary", {}).get("totalDueAmount", 0),
+                    data.get("billSummary", {}).get("netBillAmount", 0)
+                ]
+                
+                best_total = max([t for t in total_candidates if t and t > 0], default=0)
+                if best_total > 0:
+                    data["billSummary"]["currentBillAmount"] = best_total
+                    print(f"📊 Auto-filled currentBillAmount: €{best_total}")
+        
+        return data
+    
+    def _create_safe_fallback_bill(self, bill_type: str) -> Dict:
+        """Create a completely safe fallback bill structure"""
+        
+        if bill_type == "gas":
+            return {
+                "documentType": "Natural Gas Bill",
+                "supplierInfo": {
+                    "name": "Unknown",
+                    "vatRegNo": None,
+                    "phoneNumber": None,
+                    "email": None,
+                    "address": {"street": None, "city": None, "postalCode": None}
+                },
+                "customerInfo": {
+                    "name": "Unknown",
+                    "address": {"street": None, "city": None, "postalCode": None},
+                    "contactNumber": None
+                },
+                "accountInfo": {
+                    "accountNumber": "Unknown",
+                    "gprn": None,
+                    "meterNumber": None,
+                    "tariffCategory": None,
+                    "paymentMethod": None
+                },
+                "billSummary": {
+                    "invoiceNumber": "Unknown",
+                    "issueDate": "1900-01-01",
+                    "dueDate": "1900-01-01", 
+                    "billingPeriodStartDate": "1900-01-01",
+                    "billingPeriodEndDate": "1900-01-01",
+                    "lastBillAmount": 0,
+                    "paymentReceivedAmount": 0,
+                    "balanceBroughtForward": 0,
+                    "netBillAmount": 0,
+                    "totalVatAmount": 0,
+                    "currentBillAmount": 0,
+                    "totalDueAmount": 0
+                },
+                "meterReadings": {
+                    "previousReading": None,
+                    "presentReading": None,
+                    "unitsConsumed": 0
+                },
+                "consumptionDetails": {
+                    "consumptionValue": 0,
+                    "consumptionUnit": "kWh",
+                    "calibrationValue": None,
+                    "conversionFactor": None,
+                    "correctionFactor": None
+                },
+                "lineItems": [],
+                "_extraction_note": "Fallback structure - requires frontend editing"
+            }
+        
+        # Add similar structure for electricity
+        return {"error": "Unknown bill type"}
     
     def _validate_electricity_simple(self, data: Dict, pdf_intelligence: Dict) -> Dict:
         """Simple electricity validation"""
@@ -807,7 +1060,7 @@ class SmartBillExtractor:
         return {
             "overall_confidence": validation.get("confidence_score", 85),
             "total_corrections": len(validation.get("corrections", [])),
-            "validation_method": "smart_validation",
+            "validation_method": "fail_safe_validation",
             "extraction_quality": "high"
         }
     
@@ -822,15 +1075,64 @@ class SmartBillExtractor:
         return image_data
     
     def _parse_claude_response(self, response_text: str) -> Dict:
-        """Parse Claude JSON response"""
+        """Parse Claude JSON response with better error handling"""
         try:
+            if not response_text or not response_text.strip():
+                print("❌ Claude returned empty response")
+                return self._create_fallback_response("Empty response from Claude")
+            
+            print(f"📝 Claude response preview: {response_text[:200]}...")
+            
+            # Try to find JSON in code blocks first
             json_match = re.search(r'```json\n(.*?)\n```', response_text, re.DOTALL)
             if json_match:
-                return json.loads(json_match.group(1))
-            return json.loads(response_text)
+                json_content = json_match.group(1).strip()
+                print(f"✅ Found JSON in code block ({len(json_content)} chars)")
+                return json.loads(json_content)
+            
+            # Try parsing the entire response as JSON
+            if response_text.strip().startswith('{'):
+                return json.loads(response_text)
+            
+            # Look for any JSON-like content
+            json_like = re.search(r'\{.*\}', response_text, re.DOTALL)
+            if json_like:
+                print("🔍 Found JSON-like content, attempting parse...")
+                return json.loads(json_like.group(0))
+            
+            # If no JSON found, create fallback
+            print(f"❌ No JSON found in Claude response. Content: {response_text[:500]}")
+            return self._create_fallback_response("No JSON in Claude response")
+            
         except json.JSONDecodeError as e:
-            print(f"JSON parsing error: {e}")
-            raise e
+            print(f"❌ JSON parsing error: {e}")
+            print(f"📝 Problematic content: {response_text[:500]}")
+            return self._create_fallback_response(f"JSON parsing failed: {e}")
+        except Exception as e:
+            print(f"❌ Unexpected error parsing Claude response: {e}")
+            return self._create_fallback_response(f"Unexpected error: {e}")
+    
+    def _create_fallback_response(self, error_reason: str) -> Dict:
+        """Create a minimal fallback response when Claude fails"""
+        return {
+            "documentType": "Unknown Bill",
+            "supplierInfo": {"name": "Unknown"},
+            "customerInfo": {"name": "Unknown"},
+            "accountInfo": {"accountNumber": "Unknown"},
+            "billSummary": {
+                "invoiceNumber": "Unknown",
+                "issueDate": "1900-01-01",
+                "dueDate": "1900-01-01",
+                "billingPeriodStartDate": "1900-01-01",
+                "billingPeriodEndDate": "1900-01-01",
+                "currentBillAmount": 0
+            },
+            "meterReadings": {"unitsConsumed": 0},
+            "consumptionDetails": {"consumptionValue": 0},
+            "lineItems": [],
+            "_extraction_error": error_reason,
+            "_confidence": 0
+        }
 
 
 # MAIN INTEGRATION FUNCTION  
