@@ -15,18 +15,22 @@ from fastapi.responses import StreamingResponse, Response
 from app.utils.s3 import save_pdf_to_s3
 from typing import List, Dict, Optional, Tuple
 
+# CHANGE: Import SmartBillExtractor instead of DocuPipe
+from app.utils.smart_bill_extractor import process_with_smart_bill_extractor
+
 router = APIRouter()
 
-DOCUPIPE_API_KEY = os.getenv("DOCUPIPE_API_KEY")
-SCHEMA_ELECTRICITY = "3ca991a9"
-SCHEMA_GAS = "0804d026"
+# CHANGE: Replace DocuPipe API key with Anthropic
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+SCHEMA_ELECTRICITY = "3ca991a9"  # Keep for reference
+SCHEMA_GAS = "0804d026"  # Keep for reference
 UPLOAD_WEBHOOK_URL = os.getenv("UPLOAD_WEBHOOK_URL")
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "jmk-project-uploads")
 
 # Initialize S3 client
 s3_client = boto3.client('s3')
 
-# ============= DUPLICATE DETECTION FUNCTIONS =============
+# ============= DUPLICATE DETECTION FUNCTIONS (UNCHANGED) =============
 
 def create_bill_fingerprint(bill_data: dict) -> str:
     """Create unique fingerprint for duplicate detection"""
@@ -184,7 +188,7 @@ def is_high_confidence_duplicate(bill1: dict, bill2: dict) -> bool:
         print(f"Error in high confidence check: {e}")
         return False
 
-# ============= EXISTING FUNCTIONS WITH DUPLICATE DETECTION =============
+# ============= EXISTING FUNCTIONS WITH DUPLICATE DETECTION (UNCHANGED) =============
 
 @router.post("/precheck")
 async def precheck_bill_type(file: UploadFile = File(...)):
@@ -278,11 +282,12 @@ async def parse_and_save(
     file: UploadFile = File(...),
     bill_date: str = Form(...),
     bill_type: str = Form(...),
-    supplier: str = Form(default="docupanda"),
+    supplier: str = Form(default="anthropic"),  # CHANGE: default from docupanda to anthropic
     force_upload: bool = Form(default=False)
 ):
-    if not DOCUPIPE_API_KEY:
-        raise HTTPException(status_code=500, detail="DocuPipe API key not configured")
+    # CHANGE: Check Anthropic API key instead of DocuPipe
+    if not ANTHROPIC_API_KEY:
+        raise HTTPException(status_code=500, detail="Anthropic API key not configured")
     
     if bill_type not in ["electricity", "gas"]:
         raise HTTPException(status_code=400, detail="Invalid bill type. Must be 'electricity' or 'gas'")
@@ -320,14 +325,16 @@ async def parse_and_save(
         except Exception as e:
             print(f"Pre-check duplicate detection failed: {e}")
     
+    # CHANGE: Call Anthropic function instead of DocuPipe
     background_tasks.add_task(
-        process_and_store_docupipe, 
+        process_and_store_anthropic, 
         content, hotel_id, filename, bill_date, bill_type, supplier, force_upload
     )
     
     return {"status": "processing", "message": "Upload received. Processing in background."}
 
-def process_and_store_docupipe(content, hotel_id, filename, bill_date, bill_type, supplier="docupanda", force_upload=False):
+# CHANGE: Replace entire DocuPipe processing function with Anthropic
+def process_and_store_anthropic(content, hotel_id, filename, bill_date, bill_type, supplier="anthropic", force_upload=False):
     try:
         print(f"Processing {filename} - Type: {bill_type}, Hotel: {hotel_id}, Force: {force_upload}")
         
@@ -353,252 +360,88 @@ def process_and_store_docupipe(content, hotel_id, filename, bill_date, bill_type
         except Exception as e:
             print(f"Local parsing failed: {e}")
         
-        encoded = base64.b64encode(content).decode()
-        
-        print("Uploading to DocuPipe...")
-        upload_res = requests.post(
-            "https://app.docupipe.ai/document",
-            json={"document": {"file": {"contents": encoded, "filename": filename}}},
-            headers={
-                "accept": "application/json",
-                "content-type": "application/json",
-                "X-API-Key": DOCUPIPE_API_KEY,
-            },
-            timeout=30
-        )
-        
-        print(f"DocuPipe upload response: {upload_res.status_code}")
-        
-        if not upload_res.ok:
-            error_msg = f"DocuPipe upload failed: {upload_res.status_code}"
-            print(error_msg)
-            send_upload_webhook(hotel_id, bill_type, filename, bill_date, "", detected_supplier, "error", error_msg)
-            return
-        
-        data = upload_res.json()
-        document_id = data.get("documentId")
-        job_id = data.get("jobId")
-        
-        if not document_id or not job_id:
-            error_msg = f"Missing documentId or jobId in response: {data}"
-            print(error_msg)
-            send_upload_webhook(hotel_id, bill_type, filename, bill_date, "", detected_supplier, "error", error_msg)
-            return
-        
-        print(f"Document uploaded: {document_id}, Job: {job_id}")
-        
-        for attempt in range(10):
-            time.sleep(5)
-            try:
-                res = requests.get(
-                    f"https://app.docupipe.ai/job/{job_id}",
-                    headers={"accept": "application/json", "X-API-Key": DOCUPIPE_API_KEY},
-                    timeout=10
-                )
-                if not res.ok:
-                    print(f"Job status check failed: {res.status_code}")
-                    continue
-                    
-                status = res.json().get("status")
-                print(f"Document processing {attempt + 1}: {status}")
-                
-                if status == "completed":
-                    break
-                elif status == "error":
-                    error_msg = "Document processing failed"
-                    print(error_msg)
-                    send_upload_webhook(hotel_id, bill_type, filename, bill_date, "", detected_supplier, "error", error_msg)
-                    return
-            except requests.RequestException as e:
-                print(f"Request error during job status check: {e}")
-                continue
-        else:
-            error_msg = "Document processing timeout"
-            print(error_msg)
-            send_upload_webhook(hotel_id, bill_type, filename, bill_date, "", detected_supplier, "error", error_msg)
-            return
-        
-        schema_id = SCHEMA_ELECTRICITY if bill_type == "electricity" else SCHEMA_GAS
-        print(f"Using schema: {schema_id} for {bill_type}")
-        
+        # CHANGE: Use SmartBillExtractor instead of DocuPipe
+        print("Processing with SmartBillExtractor...")
         try:
-            std_res = requests.post(
-                "https://app.docupipe.ai/v2/standardize/batch",
-                json={"documentIds": [document_id], "schemaId": schema_id},
-                headers={
-                    "accept": "application/json",
-                    "content-type": "application/json",
-                    "X-API-Key": DOCUPIPE_API_KEY,
-                },
-                timeout=30
-            )
+            claude_result = process_with_smart_bill_extractor(content, bill_type, filename, ANTHROPIC_API_KEY)
             
-            print(f"v2/standardize/batch response: {std_res.status_code}")
-            
-            if not std_res.ok:
-                print("v2 failed, trying v1 endpoint...")
-                std_res = requests.post(
-                    "https://app.docupipe.ai/standardize/batch",
-                    json={"documentIds": [document_id], "schemaId": schema_id},
-                    headers={
-                        "accept": "application/json",
-                        "content-type": "application/json",
-                        "X-API-Key": DOCUPIPE_API_KEY,
-                    },
-                    timeout=30
-                )
-                print(f"v1/standardize/batch response: {std_res.status_code}")
-            
-            if not std_res.ok:
-                error_msg = f"Both standardization endpoints failed: {std_res.status_code}"
+            if not claude_result or "raw_data" not in claude_result:
+                error_msg = "SmartBillExtractor failed to process the bill"
                 print(error_msg)
                 send_upload_webhook(hotel_id, bill_type, filename, bill_date, "", detected_supplier, "error", error_msg)
                 return
-                
-            print(f"Standardization started: {std_res.status_code}")
             
-        except requests.RequestException as e:
-            error_msg = f"Standardization request error: {e}"
+            parsed = claude_result["raw_data"]
+            validation_info = claude_result.get("validation", {})
+            
+            print(f"SmartBillExtractor completed with {validation_info.get('overall_confidence', 0)}% confidence")
+            print(f"Got parsed data with keys: {list(parsed.keys())}")
+            
+        except Exception as e:
+            error_msg = f"SmartBillExtractor processing error: {e}"
             print(error_msg)
             send_upload_webhook(hotel_id, bill_type, filename, bill_date, "", detected_supplier, "error", error_msg)
             return
         
-        std_data = std_res.json()
-        std_job_id = std_data.get("jobId")
-        std_id = std_data.get("standardizationIds", [None])[0]
+        billing_start = (
+            parsed.get("billingPeriod", {}).get("startDate") or 
+            parsed.get("billSummary", {}).get("billingPeriodStartDate") or 
+            bill_date
+        )
         
-        if not std_job_id or not std_id:
-            error_msg = f"Missing standardization IDs: {std_data}"
-            print(error_msg)
-            send_upload_webhook(hotel_id, bill_type, filename, bill_date, "", detected_supplier, "error", error_msg)
-            return
+        # CREATE COMPLETE BILL DATA FOR DUPLICATE CHECK
+        complete_bill_data = {
+            "hotel_id": hotel_id,
+            "utility_type": bill_type,
+            "filename": filename,
+            "uploaded_at": datetime.utcnow().isoformat(),
+            "summary": extract_bill_summary_from_real_data(parsed, bill_type),
+            "raw_data": parsed,
+            "validation": validation_info  # CHANGE: Add validation info from SmartBillExtractor
+        }
         
-        print("Waiting for standardization...")
-        time.sleep(15)
-        
-        for attempt in range(12):
-            try:
-                std_job_res = requests.get(
-                    f"https://app.docupipe.ai/job/{std_job_id}",
-                    headers={"accept": "application/json", "X-API-Key": DOCUPIPE_API_KEY},
-                    timeout=10
-                )
+        # DUPLICATE CHECK WITH COMPLETE DATA
+        if not force_upload:
+            is_duplicate, duplicates, confidence = check_for_duplicates(hotel_id, complete_bill_data)
+            
+            if is_duplicate:
+                print(f"DUPLICATE DETECTED: {confidence} confidence, {len(duplicates)} existing bills")
+                for dup in duplicates:
+                    print(f"  - {dup['filename']} ({dup['confidence']})")
                 
-                if not std_job_res.ok:
-                    print(f"Standardization status check failed: {std_job_res.status_code}")
-                    time.sleep(10)
-                    continue
-                
-                status = std_job_res.json().get("status")
-                print(f"Standardization {attempt + 1}: {status}")
-                
-                if status == "completed":
-                    print(f"Standardization completed, waiting 5 seconds before fetching result...")
-                    time.sleep(5)
-                    
-                    print(f"Fetching result from: https://app.docupipe.ai/standardization/{std_id}")
-                    result_res = requests.get(
-                        f"https://app.docupipe.ai/standardization/{std_id}",
-                        headers={"accept": "application/json", "X-API-Key": DOCUPIPE_API_KEY},
-                        timeout=10
-                    )
-                    
-                    if not result_res.ok:
-                        error_msg = f"Failed to get standardization result: {result_res.status_code}"
-                        print(error_msg)
-                        send_upload_webhook(hotel_id, bill_type, filename, bill_date, "", detected_supplier, "error", error_msg)
-                        return
-                    
-                    result_json = result_res.json()
-                    print(f"DocuPipe result keys: {list(result_json.keys())}")
-                    
-                    parsed = result_json.get("data", {})
-                    
-                    if not parsed:
-                        parsed = result_json.get("result", {})
-                        if not parsed:
-                            error_msg = f"Empty result from DocuPipe. Response: {result_json}"
-                            print(error_msg)
-                            send_upload_webhook(hotel_id, bill_type, filename, bill_date, "", detected_supplier, "error", error_msg)
-                            return
-                    
-                    print(f"Got parsed data with keys: {list(parsed.keys())}")
-                    
-                    billing_start = (
-                        parsed.get("billingPeriod", {}).get("startDate") or 
-                        parsed.get("billingPeriodStartDate") or 
-                        bill_date
-                    )
-                    
-                    # CREATE COMPLETE BILL DATA FOR DUPLICATE CHECK
-                    complete_bill_data = {
-                        "hotel_id": hotel_id,
-                        "utility_type": bill_type,
-                        "filename": filename,
-                        "uploaded_at": datetime.utcnow().isoformat(),
-                        "summary": extract_bill_summary_from_real_data(parsed, bill_type),
-                        "raw_data": parsed
-                    }
-                    
-                    # DUPLICATE CHECK WITH COMPLETE DATA
-                    if not force_upload:
-                        is_duplicate, duplicates, confidence = check_for_duplicates(hotel_id, complete_bill_data)
-                        
-                        if is_duplicate:
-                            print(f"DUPLICATE DETECTED: {confidence} confidence, {len(duplicates)} existing bills")
-                            for dup in duplicates:
-                                print(f"  - {dup['filename']} ({dup['confidence']})")
-                            
-                            # Block exact duplicates
-                            if confidence == "exact":
-                                error_msg = f"Exact duplicate blocked: {duplicates[0]['filename']}"
-                                print(error_msg)
-                                send_upload_webhook(hotel_id, bill_type, filename, bill_date, "", detected_supplier, "duplicate_blocked", error_msg)
-                                return
-                            
-                            # Add duplicate warning for high confidence
-                            complete_bill_data["duplicate_warning"] = {
-                                "confidence": confidence,
-                                "similar_bills": duplicates,
-                                "detected_at": datetime.utcnow().isoformat(),
-                                "saved_anyway": True
-                            }
-                    
-                    try:
-                        s3_json_path = save_parsed_data_to_s3(hotel_id, bill_type, parsed, "", filename, complete_bill_data)
-                        save_pdf_to_s3(content, hotel_id, bill_type, billing_start, filename)
-                        
-                        print(f"Successfully saved: {s3_json_path}")
-                        
-                        webhook_status = "success"
-                        if complete_bill_data.get("duplicate_warning"):
-                            webhook_status = "success_with_duplicate_warning"
-                        
-                        send_upload_webhook(hotel_id, bill_type, filename, billing_start, s3_json_path, detected_supplier, webhook_status)
-                        return
-                        
-                    except Exception as e:
-                        error_msg = f"Failed to save data: {e}"
-                        print(error_msg)
-                        send_upload_webhook(hotel_id, bill_type, filename, bill_date, "", detected_supplier, "error", error_msg)
-                        return
-                    
-                elif status == "error":
-                    error_msg = "Standardization processing failed"
+                # Block exact duplicates
+                if confidence == "exact":
+                    error_msg = f"Exact duplicate blocked: {duplicates[0]['filename']}"
                     print(error_msg)
-                    send_upload_webhook(hotel_id, bill_type, filename, bill_date, "", detected_supplier, "error", error_msg)
+                    send_upload_webhook(hotel_id, bill_type, filename, bill_date, "", detected_supplier, "duplicate_blocked", error_msg)
                     return
-                else:
-                    time.sleep(10)
-                    
-            except requests.RequestException as e:
-                print(f"Request error during standardization check: {e}")
-                time.sleep(10)
-                continue
+                
+                # Add duplicate warning for high confidence
+                complete_bill_data["duplicate_warning"] = {
+                    "confidence": confidence,
+                    "similar_bills": duplicates,
+                    "detected_at": datetime.utcnow().isoformat(),
+                    "saved_anyway": True
+                }
         
-        error_msg = "Standardization timeout"
-        print(error_msg)
-        send_upload_webhook(hotel_id, bill_type, filename, bill_date, "", detected_supplier, "error", error_msg)
+        try:
+            s3_json_path = save_parsed_data_to_s3(hotel_id, bill_type, parsed, "", filename, complete_bill_data)
+            save_pdf_to_s3(content, hotel_id, bill_type, billing_start, filename)
+            
+            print(f"Successfully saved: {s3_json_path}")
+            
+            webhook_status = "success"
+            if complete_bill_data.get("duplicate_warning"):
+                webhook_status = "success_with_duplicate_warning"
+            
+            send_upload_webhook(hotel_id, bill_type, filename, billing_start, s3_json_path, detected_supplier, webhook_status)
+            return
+            
+        except Exception as e:
+            error_msg = f"Failed to save data: {e}"
+            print(error_msg)
+            send_upload_webhook(hotel_id, bill_type, filename, bill_date, "", detected_supplier, "error", error_msg)
+            return
         
     except Exception as e:
         error_msg = f"Processing error: {e}"
@@ -802,7 +645,7 @@ def get_utility_data_for_hotel_year(hotel_id: str, year: str):
         print(f"Error in get_utility_data_for_hotel_year: {e}")
         return []
 
-# ============= DUPLICATE MANAGEMENT ENDPOINTS =============
+# ============= ALL OTHER ENDPOINTS REMAIN EXACTLY THE SAME =============
 
 @router.get("/{hotel_id}/duplicates/stats")
 async def get_duplicate_stats(hotel_id: str):
